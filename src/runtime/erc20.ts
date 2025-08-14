@@ -120,7 +120,7 @@ class ERC20Runtime {
         return this.gasPrice;
     }
 
-    async ConstructTransactions(
+    async ConstructTransactions_old(
         accounts: senderAccount[],
         numTx: number
     ): Promise<TransactionRequest[]> {
@@ -185,6 +185,134 @@ class ERC20Runtime {
 
         constructBar.stop();
         Logger.success(`Successfully constructed ${numTx} transactions`);
+
+        return transactions;
+    }
+
+    async ConstructTransactions(
+        accounts: senderAccount[],
+        numTx: number
+    ): Promise<TransactionRequest[]> {
+        if (!this.contract) {
+            throw RuntimeErrors.errRuntimeNotInitialized;
+        }
+
+        const chainID = await this.baseDeployer.getChainId();
+        const gasPrice = this.gasPrice;
+
+        Logger.info(`Chain ID: ${chainID}`);
+        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
+
+        const constructBar = new SingleBar({
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+            hideCursor: true,
+        });
+
+        Logger.info(`\nConstructing ${this.coinName} transfer transactions (parallel)...`);
+        constructBar.start(numTx, 0, {
+            speed: 'N/A',
+        });
+
+        // Pre-create wallets and contracts to avoid repeated creation
+        const walletCache = new Map<number, { wallet: Wallet; contract: Contract }>();
+        
+        const createWalletAndContract = (senderIndex: number) => {
+            if (!walletCache.has(senderIndex)) {
+                const wallet = Wallet.fromMnemonic(
+                    this.mnemonic,
+                    `m/44'/60'/0'/0/${senderIndex}`
+                ).connect(this.provider);
+
+                const contract = new Contract(
+                    this.contract!.address,
+                    ZexCoin.abi,
+                    wallet
+                );
+
+                walletCache.set(senderIndex, { wallet, contract });
+            }
+            return walletCache.get(senderIndex)!;
+        };
+
+        const batchSize = 50; // Process in parallel batches
+        const transactions: TransactionRequest[] = [];
+
+        // Process transactions in parallel batches
+        for (let i = 0; i < numTx; i += batchSize) {
+            const batchEnd = Math.min(i + batchSize, numTx);
+            const batchPromises = [];
+
+            for (let j = i; j < batchEnd; j++) {
+                const senderIndex = j % accounts.length;
+                const receiverIndex = (j + 1) % accounts.length;
+
+                const sender = accounts[senderIndex];
+                const receiver = accounts[receiverIndex];
+
+                // Create promise for parallel processing
+                const txPromise = (async () => {
+                    try {
+                        const { contract } = createWalletAndContract(senderIndex);
+
+                        // This is the main bottleneck - RPC call
+                        const transaction = await contract.populateTransaction.transfer(
+                            receiver.getAddress(),
+                            this.defaultTransferValue
+                        );
+
+                        // Override the defaults
+                        transaction.from = sender.getAddress();
+                        transaction.chainId = chainID;
+                        transaction.gasPrice = gasPrice;
+                        transaction.gasLimit = this.gasEstimation;
+                        transaction.nonce = sender.getNonce();
+
+                        // Update progress immediately after each transaction is constructed
+                        constructBar.increment();
+
+                        return {
+                            index: j,
+                            transaction,
+                            sender,
+                            success: true
+                        };
+                    } catch (error: any) {
+                        Logger.warn(`Failed to construct transaction ${j}: ${error.message}`);
+                        constructBar.increment();
+                        
+                        return {
+                            index: j,
+                            transaction: null,
+                            sender,
+                            success: false
+                        };
+                    }
+                })();
+
+                batchPromises.push(txPromise);
+            }
+
+            // Wait for all transactions in this batch to complete
+            const batchResults = await Promise.all(batchPromises);
+
+            // Process results in order and update nonces
+            batchResults
+                .sort((a, b) => a.index - b.index) // Maintain order
+                .forEach(result => {
+                    if (result.success && result.transaction) {
+                        transactions.push(result.transaction);
+                        result.sender.incrNonce();
+                    }
+                });
+        }
+
+        constructBar.stop();
+        Logger.success(`Successfully constructed ${transactions.length}/${numTx} transactions in parallel`);
+
+        if (transactions.length < numTx) {
+            Logger.warn(`${numTx - transactions.length} transactions failed to construct`);
+        }
 
         return transactions;
     }
