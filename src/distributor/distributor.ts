@@ -143,31 +143,63 @@ class Distributor {
             speed: 'N/A',
         });
 
-        for (let i = 1; i <= this.requestedSubAccounts; i++) {
-            const addrWallet = Wallet.fromMnemonic(
-                this.mnemonic,
-                `m/44'/60'/0'/0/${i}`
-            ).connect(this.provider);
+        // Create account indices array
+        const accountIndices = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
+        
+        // Process accounts in batches to avoid overwhelming RPC endpoint
+        const batchSize = 50; // Maximum concurrent requests
+        
+        for (let i = 0; i < accountIndices.length; i += batchSize) {
+            const batch = accountIndices.slice(i, i + batchSize);
+            
+            const batchPromises = batch.map(index => {
+                const addrWallet = Wallet.fromMnemonic(
+                    this.mnemonic,
+                    `m/44'/60'/0'/0/${index}`
+                ).connect(this.provider);
 
-            const balance = await addrWallet.getBalance();
-            balanceBar.increment();
+                return addrWallet.getBalance().then(balance => ({
+                    index: index,
+                    balance: balance,
+                    address: addrWallet.address,
+                    error: undefined as string | undefined
+                })).catch((error: any) => ({
+                    index: index,
+                    balance: null as BigNumber | null,
+                    address: addrWallet.address,
+                    error: error.message as string
+                }));
+            });
 
-            if (balance.lt(singleRunCost)) {
-                // Address doesn't have enough funds, make sure it's
-                // on the list to get topped off
-                shortAddresses.push(
-                    new distributeAccount(
-                        singleRunCost.sub(balance),
-                        addrWallet.address,
-                        i
-                    )
-                );
+            const batchResults = await Promise.all(batchPromises);
+            
+            // Process batch results immediately and update progress bar
+            for (const result of batchResults) {
+                balanceBar.increment();
 
-                continue;
+                // Handle failed requests
+                if (result.balance === null || result.error) {
+                    Logger.warn(`Failed to get balance for account ${result.index}: ${result.error || 'Unknown error'}`);
+                    continue;
+                }
+
+                if (result.balance.lt(singleRunCost)) {
+                    // Address doesn't have enough funds, make sure it's
+                    // on the list to get topped off
+                    shortAddresses.push(
+                        new distributeAccount(
+                            singleRunCost.sub(result.balance),
+                            result.address,
+                            result.index
+                        )
+                    );
+
+                    continue;
+                }
+
+                // Address has enough funds already, mark it as ready
+                this.readyMnemonicIndexes.push(result.index);
             }
-
-            // Address has enough funds already, mark it as ready
-            this.readyMnemonicIndexes.push(i);
         }
 
         balanceBar.stop();

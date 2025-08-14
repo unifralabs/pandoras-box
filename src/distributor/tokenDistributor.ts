@@ -108,27 +108,62 @@ class TokenDistributor {
             speed: 'N/A',
         });
 
-        for (const index of this.readyMnemonicIndexes) {
-            const addrWallet = Wallet.fromMnemonic(
-                this.mnemonic,
-                `m/44'/60'/0'/0/${index}`
-            );
-
-            const balance: number = await this.tokenRuntime.GetTokenBalance(
-                addrWallet.address
-            );
-            balanceBar.increment();
-
-            if (balance < singleRunCost) {
-                // Address doesn't have enough funds, make sure it's
-                // on the list to get topped off
-                shortAddresses.push(
-                    new distributeAccount(
-                        BigNumber.from(singleRunCost - balance),
-                        addrWallet.address,
-                        index
-                    )
+        // Process accounts in batches to avoid overwhelming RPC endpoint
+        const batchSize = 50; // Maximum concurrent requests
+        
+        for (let i = 0; i < this.readyMnemonicIndexes.length; i += batchSize) {
+            const batch = this.readyMnemonicIndexes.slice(i, i + batchSize);
+            
+            const batchPromises = batch.map(async (index) => {
+                const addrWallet = Wallet.fromMnemonic(
+                    this.mnemonic,
+                    `m/44'/60'/0'/0/${index}`
                 );
+
+                try {
+                    const balance: number = await this.tokenRuntime.GetTokenBalance(
+                        addrWallet.address
+                    );
+
+                    return {
+                        index: index,
+                        balance: balance,
+                        address: addrWallet.address,
+                        error: undefined as string | undefined
+                    };
+                } catch (error: any) {
+                    return {
+                        index: index,
+                        balance: null as number | null,
+                        address: addrWallet.address,
+                        error: error.message as string
+                    };
+                }
+            });
+
+            const batchResults = await Promise.all(batchPromises);
+            
+            // Process batch results immediately and update progress bar
+            for (const result of batchResults) {
+                balanceBar.increment();
+
+                // Handle failed requests
+                if (result.balance === null || result.error) {
+                    Logger.warn(`Failed to get token balance for account ${result.index}: ${result.error || 'Unknown error'}`);
+                    continue;
+                }
+
+                if (result.balance < singleRunCost) {
+                    // Address doesn't have enough funds, make sure it's
+                    // on the list to get topped off
+                    shortAddresses.push(
+                        new distributeAccount(
+                            BigNumber.from(singleRunCost - result.balance),
+                            result.address,
+                            result.index
+                        )
+                    );
+                }
             }
         }
 
