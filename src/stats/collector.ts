@@ -260,7 +260,7 @@ class StatCollector {
                 succeeded.push(
                     new txStats(
                         batchItem.result.transactionHash,
-                        batchItem.result.blockNumber
+                        parseInt(batchItem.result.blockNumber, 16)
                     )
                 );
             }
@@ -399,7 +399,7 @@ class StatCollector {
 
         sortedMap.forEach((info) => {
             utilizationTable.push([
-                info.blockNum,
+                info.blockNum.toString(),
                 info.gasUsed,
                 info.gasLimit,
                 info.numTxs,
