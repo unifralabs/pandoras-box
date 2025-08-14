@@ -274,7 +274,7 @@ class TokenDistributor {
             speed: 'N/A',
         });
 
-        const batchSize = 30; // Can use larger batches now that nonce is managed locally
+        const batchSize = 50; // Can use larger batches now that nonce is managed locally
         const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
 
         // Process accounts in batches with managed nonce
