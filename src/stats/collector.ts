@@ -24,19 +24,22 @@ class BlockInfo {
     gasUsed: string;
     gasLimit: string;
     gasUtilization: number;
+    tps: number;
 
     constructor(
         blockNum: number,
         createdAt: number,
         numTxs: number,
         gasUsed: BigNumber,
-        gasLimit: BigNumber
+        gasLimit: BigNumber,
+        tps: number = 0
     ) {
         this.blockNum = blockNum;
         this.createdAt = createdAt;
         this.numTxs = numTxs;
         this.gasUsed = gasUsed.toHexString();
         this.gasLimit = gasLimit.toHexString();
+        this.tps = tps;
 
         const largeDivision = gasUsed
             .mul(BigNumber.from(10000))
@@ -292,9 +295,27 @@ class StatCollector {
         });
 
         const blocksMap: Map<number, BlockInfo> = new Map<number, BlockInfo>();
-        for (const block of blockSet.keys()) {
+        const sortedBlocks = Array.from(blockSet).sort((a, b) => a - b);
+
+        // Fetch blocks and calculate TPS
+        for (let i = 0; i < sortedBlocks.length; i++) {
+            const block = sortedBlocks[i];
             try {
                 const fetchedInfo = await provider.getBlock(block);
+                let tps = 0;
+
+                // Calculate TPS for this block
+                if (i > 0) {
+                    // Get the previous block for time difference calculation
+                    const prevBlock = sortedBlocks[i - 1];
+                    const prevBlockInfo = await provider.getBlock(prevBlock);
+                    const timeDiff = fetchedInfo.timestamp - prevBlockInfo.timestamp;
+                    
+                    // Calculate TPS (transactions per second)
+                    if (timeDiff > 0) {
+                        tps = Number((fetchedInfo.transactions.length / timeDiff).toFixed(2));
+                    }
+                }
 
                 blocksBar.increment();
 
@@ -305,7 +326,8 @@ class StatCollector {
                         fetchedInfo.timestamp,
                         fetchedInfo.transactions.length,
                         fetchedInfo.gasUsed,
-                        fetchedInfo.gasLimit
+                        fetchedInfo.gasLimit,
+                        tps
                     )
                 );
             } catch (e: any) {
@@ -390,6 +412,7 @@ class StatCollector {
                 'Gas Limit [wei]',
                 'Transactions',
                 'Utilization',
+                'TPS',
             ],
         });
 
@@ -404,6 +427,7 @@ class StatCollector {
                 info.gasLimit,
                 info.numTxs,
                 `${info.gasUtilization}%`,
+                info.tps === 0 ? 'N/A' : info.tps.toString(),
             ]);
         });
 

@@ -2,20 +2,21 @@
 set -e
 yarn build
 # Set the number of transactions, batch size, and number of subaccounts
-transactions=10000
+transactions=1000
 batch=5
-subaccounts=500
+subaccounts=100
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 
-pandoras-box -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
+./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
 --mode EOA \
 -o ./EOA_${transactions}_${batch}_${subaccounts}.json
 
+exit 0
 
-pandoras-box -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
+./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
@@ -23,7 +24,7 @@ pandoras-box -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -o ./ERC20_${transactions}_${batch}_${subaccounts}.json
 # # sleep 60
 
-pandoras-box -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
+./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
