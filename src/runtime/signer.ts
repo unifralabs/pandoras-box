@@ -60,20 +60,28 @@ class Signer {
             speed: 'N/A',
         });
 
-        const accounts: senderAccount[] = [];
-        for (let i = 0; i < walletsToInit; i++) {
-            const accIndex = accountIndexes[i];
-
-            const wallet = Wallet.fromMnemonic(
+        // Create wallets first (fast, sync operation)
+        const wallets = accountIndexes.slice(0, walletsToInit).map(accIndex => ({
+            accIndex,
+            wallet: Wallet.fromMnemonic(
                 this.mnemonic,
                 `m/44'/60'/0'/0/${accIndex}`
-            ).connect(this.provider);
+            ).connect(this.provider)
+        }));
+
+        // Fetch all nonces in parallel
+        const noncePromises = wallets.map(async ({ accIndex, wallet }) => {
             const accountNonce = await wallet.getTransactionCount();
-
-            accounts.push(new senderAccount(accIndex, accountNonce, wallet));
-
             nonceBar.increment();
-        }
+            return { accIndex, wallet, accountNonce };
+        });
+
+        const walletData = await Promise.all(noncePromises);
+
+        // Create sender accounts
+        const accounts: senderAccount[] = walletData.map(({ accIndex, wallet, accountNonce }) =>
+            new senderAccount(accIndex, accountNonce, wallet)
+        );
 
         nonceBar.stop();
 
