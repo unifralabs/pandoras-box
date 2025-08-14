@@ -69,14 +69,35 @@ class Signer {
             ).connect(this.provider)
         }));
 
-        // Fetch all nonces in parallel
-        const noncePromises = wallets.map(async ({ accIndex, wallet }) => {
-            const accountNonce = await wallet.getTransactionCount();
-            nonceBar.increment();
-            return { accIndex, wallet, accountNonce };
-        });
-
-        const walletData = await Promise.all(noncePromises);
+        // Fetch nonces in controlled batches to avoid overwhelming RPC
+        let batchSize = 50; // Process 50 accounts at a time
+        
+        const walletData: { accIndex: number; wallet: any; accountNonce: number }[] = [];
+        
+        for (let i = 0; i < wallets.length; i += batchSize) {
+            const batch = wallets.slice(i, i + batchSize);
+            
+            const batchPromises = batch.map(async ({ accIndex, wallet }) => {
+                try {
+                    const accountNonce = await wallet.getTransactionCount();
+                    nonceBar.increment();
+                    return { accIndex, wallet, accountNonce };
+                } catch (error: any) {
+                    Logger.warn(`Failed to get nonce for account ${accIndex}: ${error.message}`);
+                    nonceBar.increment();
+                    // Return with nonce 0 as fallback
+                    return { accIndex, wallet, accountNonce: 0 };
+                }
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            walletData.push(...batchResults);
+            
+            // Small delay between batches to reduce RPC pressure
+            if (i + batchSize < wallets.length) {
+                await new Promise(resolve => setTimeout(resolve, 10)); // 100ms delay
+            }
+        }
 
         // Create sender accounts
         const accounts: senderAccount[] = walletData.map(({ accIndex, wallet, accountNonce }) =>
@@ -113,6 +134,9 @@ class Signer {
             const sender = accounts[i % accounts.length];
 
             try {
+                // Minimal, non-intrusive logging to correlate potential nonce errors during send
+                const txNonce = (transactions[i] as any).nonce;
+                Logger.debug(`Signing tx ${i}: from ${sender.getAddress()} nonce ${txNonce}`);
                 signedTxs.push(
                     await sender.wallet.signTransaction(transactions[i])
                 );
