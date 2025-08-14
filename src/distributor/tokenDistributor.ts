@@ -1,4 +1,5 @@
 import { BigNumber } from '@ethersproject/bignumber';
+import { Contract } from '@ethersproject/contracts';
 import { Wallet } from '@ethersproject/wallet';
 import { SingleBar } from 'cli-progress';
 import Table from 'cli-table3';
@@ -73,8 +74,7 @@ class TokenDistributor {
         }
 
         // Fund the accounts
-        await this.fundAccounts(baseCosts, fundableAccounts);
-
+        await this.fundAccountsParall(baseCosts, fundableAccounts);
         Logger.success('Fund distribution finished!');
 
         return this.readyMnemonicIndexes;
@@ -217,6 +217,135 @@ class TokenDistributor {
         }
 
         fundBar.stop();
+    }
+
+    async fundAccountsParall(
+        costs: tokenRuntimeCosts,
+        accounts: distributeAccount[]
+    ) {
+        Logger.info('\nFunding accounts with tokens (parallel with nonce management)...');
+
+        // Internal helper functions for nonce management
+        const getSupplierWallet = (): Wallet => {
+            return (this.tokenRuntime as any).baseDeployer;
+        };
+
+        const getSupplierContract = (): Contract => {
+            return (this.tokenRuntime as any).contract;
+        };
+
+        const fundAccountWithNonce = async (
+            to: string, 
+            amount: number, 
+            nonce: number
+        ): Promise<void> => {
+            const wallet = getSupplierWallet();
+            const contract = getSupplierContract();
+
+            if (!contract) {
+                throw new Error('Token runtime not initialized');
+            }
+
+            // Send transaction with explicit nonce
+            const tx = await contract.connect(wallet).transfer(to, amount, {
+                nonce: nonce
+            });
+
+            // Wait for transaction to be mined
+            await tx.wait();
+        };
+
+        // Clear the list of ready indexes
+        this.readyMnemonicIndexes = [];
+
+        const fundBar = new SingleBar({
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+            hideCursor: true,
+        });
+
+        // Get initial nonce from supplier wallet
+        const supplierWallet = getSupplierWallet();
+        let currentNonce = await supplierWallet.getTransactionCount();
+        
+        Logger.info(`Starting with supplier nonce: ${currentNonce}`);
+
+        fundBar.start(accounts.length, 0, {
+            speed: 'N/A',
+        });
+
+        const batchSize = 30; // Can use larger batches now that nonce is managed locally
+        const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
+
+        // Process accounts in batches with managed nonce
+        for (let i = 0; i < accounts.length; i += batchSize) {
+            const batch = accounts.slice(i, i + batchSize);
+            
+            const batchPromises = batch.map(async (acc, batchIndex) => {
+                // Assign nonce locally and increment for each transaction
+                const assignedNonce = currentNonce + batchIndex;
+                
+                try {
+                    await fundAccountWithNonce(
+                        acc.address,
+                        acc.missingFunds.toNumber(),
+                        assignedNonce
+                    );
+
+                    // Update progress bar immediately after each transaction completes
+                    fundBar.increment();
+
+                    return {
+                        success: true,
+                        originalIndex: i + batchIndex,
+                        mnemonicIndex: acc.mnemonicIndex,
+                        nonce: assignedNonce,
+                        error: undefined as string | undefined
+                    };
+                } catch (error: any) {
+                    Logger.warn(`Failed to fund account ${acc.address} with nonce ${assignedNonce}: ${error.message}`);
+                    
+                    // Update progress bar even for failed transactions
+                    fundBar.increment();
+                    
+                    return {
+                        success: false,
+                        originalIndex: i + batchIndex,
+                        mnemonicIndex: acc.mnemonicIndex,
+                        nonce: assignedNonce,
+                        error: error.message as string
+                    };
+                }
+            });
+
+            const batchResults = await Promise.all(batchPromises);
+            
+            // Update currentNonce for next batch
+            currentNonce += batch.length;
+            
+            // Process batch results and maintain original order (no progress bar updates here)
+            for (const result of batchResults) {
+                if (result.success) {
+                    successfulIndexes.push({
+                        index: result.originalIndex,
+                        mnemonicIndex: result.mnemonicIndex
+                    });
+                }
+            }
+        }
+
+        // Sort by original index to maintain order, then push to readyMnemonicIndexes
+        successfulIndexes
+            .sort((a, b) => a.index - b.index)
+            .forEach(item => this.readyMnemonicIndexes.push(item.mnemonicIndex));
+
+        fundBar.stop();
+        
+        Logger.success(`Successfully funded ${successfulIndexes.length}/${accounts.length} accounts with nonce management`);
+        
+        if (successfulIndexes.length < accounts.length) {
+            Logger.warn(`${accounts.length - successfulIndexes.length} accounts failed to fund.`);
+        }
     }
 
     async getFundableAccounts(
