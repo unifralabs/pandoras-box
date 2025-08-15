@@ -46,10 +46,7 @@ class EOARuntime {
 
     async GetGasPrice(): Promise<BigNumber> {
         const currentGasPrice = await this.provider.getGasPrice();
-
-        // Add a safety buffer for stress testing to reduce underpriced replacements
-        this.gasPrice = currentGasPrice.mul(20);
-
+        this.gasPrice = BigNumber.from(1000000000000);
         return this.gasPrice;
     }
 
