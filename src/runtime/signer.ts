@@ -223,7 +223,8 @@ class Signer {
                 
                 workerBatches.push({
                     transactions: batchTransactions,
-                    accountIndexes: batchAccountIndexes
+                    accountIndexes: batchAccountIndexes,
+                    startIndex: start  // 传递起始索引以保持顺序
                 });
             }
         }
@@ -257,6 +258,7 @@ class Signer {
                 worker.postMessage({
                     transactions: batch.transactions,
                     accountIndexes: batch.accountIndexes,
+                    startIndex: batch.startIndex,
                     mnemonicSeed: this.mnemonic,
                     hdPath: "m/44'/60'/0'/0"
                 });
@@ -265,14 +267,19 @@ class Signer {
 
         try {
             // Wait for all workers to complete
-            const results = await Promise.all(workerPromises) as string[][];
+            const results = await Promise.all(workerPromises) as any[][];
             
-            // Flatten results - workers return signed transaction strings directly
-            const allSignedTxs = results.flat();
+            // Flatten and sort results by original index to maintain transaction order
+            const allSignedTxsWithIndex = results.flat();
+            allSignedTxsWithIndex.sort((a: any, b: any) => a.originalIndex - b.originalIndex);
+            
+            // Extract only the signed transaction strings in correct order
+            const allSignedTxs = allSignedTxsWithIndex.map((item: any) => item.signedTx);
             
             signBar.stop();
             
             Logger.success(`Successfully signed ${allSignedTxs.length}/${transactions.length} transactions using ${workerCount} CPU cores`);
+            Logger.info('✅ Transaction order preserved - nonces will be sent in correct sequence');
             
             return allSignedTxs;
             

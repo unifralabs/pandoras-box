@@ -97,7 +97,7 @@ class StatCollector {
             // Method 3: Fallback - estimate by checking latest block vs pending block
             const latestCount = await provider.getBlockNumber();
             const pendingBlockCount = await provider.getTransactionCount("0x0000000000000000000000000000000000000000", "pending");
-            
+
             return Math.max(0, pendingBlockCount);
         } catch (error: any) {
             Logger.warn(`Failed to get pending transaction count: ${error.message}`);
@@ -114,7 +114,7 @@ class StatCollector {
         try {
             const rpcProvider = provider as JsonRpcProvider;
             const result = await rpcProvider.send('txpool_status', []);
-            
+
             return {
                 pending: parseInt(result.pending, 16) || 0,
                 queued: parseInt(result.queued, 16) || 0
@@ -301,7 +301,7 @@ class StatCollector {
                 // Check pending transaction count to determine if transactions are still being processed
                 const pendingTxCount = await this.getPendingTransactionCount(provider);
                 // Logger.debug(`Pending transactions: ${pendingTxCount}`);
-                
+
                 // If no pending transactions for a while, consider processing complete
                 if (pendingTxCount === 0 && succeededTransactions.length === txHashes.length) {
                     scanBar.stop();
@@ -320,7 +320,7 @@ class StatCollector {
                     }
                     continue;
                 } else {
-                    scanBar.update({scannedBlocks:blockNumber});
+                    scanBar.update({ scannedBlocks: blockNumber });
                     blockNumber++;
                     if (block.transactions) {
                         for (const tx of block.transactions) {
@@ -330,10 +330,14 @@ class StatCollector {
                                 scanBar.update(succeededTransactions.length, {});
                             }
                         }
+                        if (targetTxSet.size === succeededTransactions.length) {
+                            scanBar.stop();
+                            break;
+                        }
                     }
                 }
             } catch (error: any) {
-                
+
                 errors.push(`Failed to scan block ${blockNumber}: ${error.message}`);
             }
         }
