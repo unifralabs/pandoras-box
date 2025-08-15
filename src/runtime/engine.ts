@@ -11,13 +11,15 @@ class EngineContext {
 
     mnemonic: string;
     url: string;
+    concurrency?: number;
 
     constructor(
         accountIndexes: number[],
         numTxs: number,
         batchSize: number,
         mnemonic: string,
-        url: string
+        url: string,
+        concurrency?: number
     ) {
         this.accountIndexes = accountIndexes;
         this.numTxs = numTxs;
@@ -25,6 +27,7 @@ class EngineContext {
 
         this.mnemonic = mnemonic;
         this.url = url;
+        this.concurrency = concurrency ? Number.parseInt(concurrency as any, 10) : undefined;
     }
 }
 
@@ -55,7 +58,8 @@ class Engine {
         return Batcher.batchTransactions(
             signedTransactions,
             ctx.batchSize,
-            ctx.url
+            ctx.url,
+            ctx.concurrency
         );
     }
 }

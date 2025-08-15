@@ -75,7 +75,88 @@ class txBatchResult {
 }
 
 class StatCollector {
-    async gatherTransactionReceipts(
+    /**
+     * Get the number of pending transactions in the transaction pool
+     * @param provider The Ethereum provider
+     * @returns Number of pending transactions
+     */
+    async getPendingTransactionCount(provider: Provider): Promise<number> {
+        try {
+            // Method 1: Try txpool_status (if supported by the node)
+            const txpoolStatus = await this.getTxpoolStatus(provider);
+            if (txpoolStatus !== null) {
+                return txpoolStatus.pending || 0;
+            }
+
+            // Method 2: Use eth_getBlockTransactionCountByNumber with "pending"
+            const pendingCount = await this.getPendingBlockTransactionCount(provider);
+            if (pendingCount !== null) {
+                return pendingCount;
+            }
+
+            // Method 3: Fallback - estimate by checking latest block vs pending block
+            const latestCount = await provider.getBlockNumber();
+            const pendingBlockCount = await provider.getTransactionCount("0x0000000000000000000000000000000000000000", "pending");
+            
+            return Math.max(0, pendingBlockCount);
+        } catch (error: any) {
+            Logger.warn(`Failed to get pending transaction count: ${error.message}`);
+            return 0;
+        }
+    }
+
+    /**
+     * Get transaction pool status using txpool_status RPC method
+     * @param provider The Ethereum provider
+     * @returns Txpool status or null if not supported
+     */
+    async getTxpoolStatus(provider: Provider): Promise<{ pending: number; queued: number } | null> {
+        try {
+            const rpcProvider = provider as JsonRpcProvider;
+            const result = await rpcProvider.send('txpool_status', []);
+            
+            return {
+                pending: parseInt(result.pending, 16) || 0,
+                queued: parseInt(result.queued, 16) || 0
+            };
+        } catch (error: any) {
+            // txpool_status might not be supported by all nodes
+            return null;
+        }
+    }
+
+    /**
+     * Get pending block transaction count using eth_getBlockTransactionCountByNumber
+     * @param provider The Ethereum provider
+     * @returns Number of pending transactions or null if not supported
+     */
+    async getPendingBlockTransactionCount(provider: Provider): Promise<number | null> {
+        try {
+            const rpcProvider = provider as JsonRpcProvider;
+            const result = await rpcProvider.send('eth_getBlockTransactionCountByNumber', ['pending']);
+            return parseInt(result, 16) || 0;
+        } catch (error: any) {
+            return null;
+        }
+    }
+
+    /**
+     * Get detailed pending transaction information using txpool_content
+     * @param provider The Ethereum provider
+     * @returns Detailed txpool content or null if not supported
+     */
+    async getTxpoolContent(provider: Provider): Promise<any | null> {
+        try {
+            const rpcProvider = provider as JsonRpcProvider;
+            const result = await rpcProvider.send('txpool_content', []);
+            return result;
+        } catch (error: any) {
+            Logger.warn(`txpool_content not supported: ${error.message}`);
+            return null;
+        }
+    }
+
+    async gatherTransactionReceipts_old(
         txHashes: string[],
         batchSize: number,
         provider: Provider
@@ -187,6 +268,94 @@ class StatCollector {
         return succeededTransactions;
     }
 
+    async gatherTransactionReceipts(
+        txHashes: string[],
+        batchSize: number,
+        provider: Provider,
+        startBlock: number,
+    ): Promise<txStats[]> {
+        let succeededTransactions: txStats[] = [];
+
+        Logger.info(`Scanning blocks ${startBlock} for transactions...`);
+
+        const targetTxSet = new Set(txHashes);
+
+        const scanBar = new SingleBar({
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+            hideCursor: false,
+            format: '{scannedBlocks} blocks|{bar} {percentage}% | {value}/{total} txs | {speed} | {eta}s',
+        });
+
+        scanBar.start(txHashes.length, 0, {
+            speed: 'N/A',
+        });
+
+        const errors: string[] = [];
+
+
+        let waitStartTime = 0;
+        for (let blockNumber = startBlock; ; blockNumber) {
+            try {
+                // Check pending transaction count to determine if transactions are still being processed
+                const pendingTxCount = await this.getPendingTransactionCount(provider);
+                Logger.debug(`Pending transactions: ${pendingTxCount}`);
+                
+                // If no pending transactions for a while, consider processing complete
+                if (pendingTxCount === 0 && succeededTransactions.length === txHashes.length) {
+                    scanBar.stop();
+                    Logger.info('All transactions processed and no pending transactions found');
+                    break;
+                }
+
+                const block = await provider.getBlockWithTransactions(blockNumber);
+                if (!block) {
+                    if (waitStartTime == 0) {
+                        waitStartTime = Date.now();
+                    }
+                    else if (Date.now() - waitStartTime > 10000) {
+                        scanBar.stop();
+                        break;
+                    }
+                    continue;
+                } else {
+                    scanBar.update({scannedBlocks:blockNumber});
+                    blockNumber++;
+                    if (block.transactions) {
+                        for (const tx of block.transactions) {
+                            const txHash = tx.hash;
+                            if (targetTxSet.has(txHash)) {
+                                succeededTransactions.push(new txStats(txHash, blockNumber));
+                                scanBar.update(succeededTransactions.length, {});
+                            }
+                        }
+                    }
+                }
+            } catch (error: any) {
+                
+                errors.push(`Failed to scan block ${blockNumber}: ${error.message}`);
+            }
+        }
+
+        scanBar.stop();
+
+        if (errors.length > 0) {
+            Logger.warn('Errors encountered during block scanning:');
+            for (const err of errors) {
+                Logger.error(err);
+            }
+        }
+
+        const foundCount = succeededTransactions.length;
+        const totalCount = txHashes.length;
+        Logger.success(`Found ${foundCount}/${totalCount} transactions in blocks ${startBlock}`);
+
+        if (foundCount < totalCount) {
+            Logger.warn(`${totalCount - foundCount} transactions were not found in the scanned block range`);
+        }
+
+        return succeededTransactions;
+    }
     async fetchTransactionReceipts(
         txHashes: string[],
         batchSize: number,
@@ -310,7 +479,7 @@ class StatCollector {
                     const prevBlock = sortedBlocks[i - 1];
                     const prevBlockInfo = await provider.getBlock(prevBlock);
                     const timeDiff = fetchedInfo.timestamp - prevBlockInfo.timestamp;
-                    
+
                     // Calculate TPS (transactions per second)
                     if (timeDiff > 0) {
                         tps = Number((fetchedInfo.transactions.length / timeDiff).toFixed(2));
@@ -459,7 +628,8 @@ class StatCollector {
         txHashes: string[],
         mnemonic: string,
         url: string,
-        batchSize: number
+        batchSize: number,
+        startBlock: number
     ): Promise<CollectorData> {
         if (txHashes.length == 0) {
             Logger.warn('No stat data to display');
@@ -475,7 +645,8 @@ class StatCollector {
         const txStats = await this.gatherTransactionReceipts(
             txHashes,
             batchSize,
-            provider
+            provider,
+            startBlock
         );
 
         // Fetch block info

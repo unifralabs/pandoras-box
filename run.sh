@@ -2,31 +2,35 @@
 set -e
 yarn build
 # Set the number of transactions, batch size, and number of subaccounts
-transactions=1000
-batch=5
-subaccounts=100
+transactions=60000
+batch=30
+subaccounts=200
+concurrency=100
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 
 ./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
+-c $concurrency \
 --mode EOA \
--o ./EOA_${transactions}_${batch}_${subaccounts}.json
-
+-o ./out/EOA_${transactions}_${batch}_${subaccounts}.json
 exit 0
+sleep 30
 
 ./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
+-c $concurrency \
 --mode ERC20 \
--o ./ERC20_${transactions}_${batch}_${subaccounts}.json
-# # sleep 60
+-o ./out/ERC20_${transactions}_${batch}_${subaccounts}.json
+sleep 30
 
 ./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
 -b $batch \
 -s $subaccounts \
+-c $concurrency \
 --mode ERC721 \
--o ./ERC721_${transactions}_${batch}_${subaccounts}.json
+-o ./out/ERC721_${transactions}_${batch}_${subaccounts}.json

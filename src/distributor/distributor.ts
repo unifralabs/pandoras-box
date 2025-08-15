@@ -42,19 +42,22 @@ class Distributor {
     totalTx: number;
     requestedSubAccounts: number;
     readyMnemonicIndexes: number[];
+    concurrency?: number;
 
     constructor(
         mnemonic: string,
         subAccounts: number,
         totalTx: number,
         runtimeEstimator: Runtime,
-        url: string
+        url: string,
+        concurrency?: number | string
     ) {
         this.requestedSubAccounts = subAccounts;
         this.totalTx = totalTx;
         this.mnemonic = mnemonic;
         this.runtimeEstimator = runtimeEstimator;
         this.readyMnemonicIndexes = [];
+        this.concurrency = concurrency !== undefined ? Number.parseInt(concurrency as any, 10) : undefined;
 
         this.provider = new JsonRpcProvider(url);
         this.ethWallet = Wallet.fromMnemonic(
@@ -147,12 +150,12 @@ class Distributor {
         const accountIndices = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
         
         // Process accounts in batches to avoid overwhelming RPC endpoint
-        const batchSize = 50; // Maximum concurrent requests
+        const balanceScanBatchSize = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of balances fetched in parallel per wave
         
-        for (let i = 0; i < accountIndices.length; i += batchSize) {
-            const batch = accountIndices.slice(i, i + batchSize);
+        for (let i = 0; i < accountIndices.length; i += balanceScanBatchSize) {
+            const accountIndexBatch = accountIndices.slice(i, i + balanceScanBatchSize);
             
-            const batchPromises = batch.map(index => {
+            const balanceBatchPromises = accountIndexBatch.map(index => {
                 const addrWallet = Wallet.fromMnemonic(
                     this.mnemonic,
                     `m/44'/60'/0'/0/${index}`
@@ -171,10 +174,10 @@ class Distributor {
                 }));
             });
 
-            const batchResults = await Promise.all(batchPromises);
+            const balanceBatchResults = await Promise.all(balanceBatchPromises);
             
             // Process batch results immediately and update progress bar
-            for (const result of batchResults) {
+            for (const result of balanceBatchResults) {
                 balanceBar.increment();
 
                 // Handle failed requests
@@ -313,14 +316,14 @@ class Distributor {
             speed: 'N/A',
         });
 
-        const batchSize = 50; // Can use larger batches now that nonce is managed locally
+        const fundingBatchSize = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of transfers sent in parallel per wave
         const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
 
         // Process accounts in batches with managed nonce
-        for (let i = 0; i < accounts.length; i += batchSize) {
-            const batch = accounts.slice(i, i + batchSize);
+        for (let i = 0; i < accounts.length; i += fundingBatchSize) {
+            const fundingBatch = accounts.slice(i, i + fundingBatchSize);
             
-            const batchPromises = batch.map(async (acc, batchIndex) => {
+            const fundingBatchPromises = fundingBatch.map(async (acc, batchIndex) => {
                 // Assign nonce locally and increment for each transaction
                 const assignedNonce = currentNonce + batchIndex;
                 
@@ -357,13 +360,13 @@ class Distributor {
                 }
             });
 
-            const batchResults = await Promise.all(batchPromises);
+            const fundingBatchResults = await Promise.all(fundingBatchPromises);
             
             // Update currentNonce for next batch
-            currentNonce += batch.length;
+            currentNonce += fundingBatch.length;
             
             // Process batch results and maintain original order (no progress bar updates here)
-            for (const result of batchResults) {
+            for (const result of fundingBatchResults) {
                 if (result.success) {
                     successfulIndexes.push({
                         index: result.originalIndex,

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { JsonRpcProvider } from '@ethersproject/providers';
 import { Distributor, Runtime } from './distributor/distributor';
 import TokenDistributor from './distributor/tokenDistributor';
 import Logger from './logger/logger';
@@ -59,6 +60,10 @@ async function run() {
             'The batch size of JSON-RPC transactions',
             '20'
         )
+        .option(
+            '-c, --concurrency <concurrency>',
+            'The maximum number of concurrent batch requests'
+        )
         .parse();
 
     const options = program.opts();
@@ -70,6 +75,7 @@ async function run() {
     const subAccountsCount = options.SubAccounts;
     const batchSize = options.batch;
     const output = options.output;
+    const concurrency = options.concurrency;
 
     let runtime: Runtime;
     switch (mode) {
@@ -101,7 +107,8 @@ async function run() {
         subAccountsCount,
         transactionCount,
         runtime,
-        url
+        url,
+        concurrency
     );
 
     const accountIndexes: number[] = await distributor.distribute();
@@ -119,6 +126,11 @@ async function run() {
         await tokenDistributor.distributeTokens();
     }
 
+    // Get current block height
+    const provider = new JsonRpcProvider(url);
+    const currentBlock = await provider.getBlockNumber();
+    let startBlock = currentBlock;
+
     // Run the specific runtime
     const txHashes = await Engine.Run(
         runtime,
@@ -127,7 +139,8 @@ async function run() {
             transactionCount,
             batchSize,
             mnemonic,
-            url
+            url,
+            concurrency
         )
     );
 
@@ -136,7 +149,8 @@ async function run() {
         txHashes,
         mnemonic,
         url,
-        batchSize
+        batchSize,
+        startBlock
     );
 
     // Output the data if needed

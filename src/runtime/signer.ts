@@ -129,6 +129,7 @@ class Signer {
         });
 
         const signedTxs: string[] = [];
+        let txMap: { [key: string]: number } = {};
 
         for (let i = 0; i < transactions.length; i++) {
             const sender = accounts[i % accounts.length];
@@ -136,7 +137,12 @@ class Signer {
             try {
                 // Minimal, non-intrusive logging to correlate potential nonce errors during send
                 const txNonce = (transactions[i] as any).nonce;
-                Logger.debug(`Signing tx ${i}: from ${sender.getAddress()} nonce ${txNonce}`);
+                let key = sender.getAddress() + txNonce.toString();
+                if (txMap[key] == undefined) {
+                    txMap[key] = txNonce;
+                } else {
+                    Logger.error(`resend tx for account ${sender.getAddress()}: ${txMap[key]} != ${txNonce}`);
+                }
                 signedTxs.push(
                     await sender.wallet.signTransaction(transactions[i])
                 );

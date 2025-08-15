@@ -37,7 +37,8 @@ class Batcher {
     static async batchTransactions(
         signedTxs: string[],
         batchSize: number,
-        url: string
+        url: string,
+        _concurrency?: number
     ): Promise<string[]> {
         // Generate the transaction hash batches
         const batches: string[][] = Batcher.generateBatches<string>(
@@ -62,44 +63,93 @@ class Batcher {
 
         try {
             let nextIndx = 0;
-            const responses = await Promise.all(
-                batches.map((item) => {
-                    let singleRequests = '';
-                    for (let i = 0; i < item.length; i++) {
-                        singleRequests += JSON.stringify({
-                            jsonrpc: '2.0',
-                            method: 'eth_sendRawTransaction',
-                            params: [item[i]],
-                            id: nextIndx++,
-                        });
+            const payloads: string[] = [];
+            for (const item of batches) {
+                let singleRequests = '';
+                for (let i = 0; i < item.length; i++) {
+                    singleRequests += JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'eth_sendRawTransaction',
+                        params: [item[i]],
+                        id: nextIndx++,
+                    });
 
-                        if (i != item.length - 1) {
-                            singleRequests += ',\n';
+                    if (i != item.length - 1) {
+                        singleRequests += ',\n';
+                    }
+                }
+                payloads.push('[' + singleRequests + ']');
+            }
+
+            let responses: any[];
+
+            if (!_concurrency || _concurrency <= 0 || _concurrency >= payloads.length) {
+                const rawResponses = await Promise.all(
+                    payloads.map((data) => {
+                        batchBar.increment();
+                        return axios({
+                            url: url,
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                            },
+                            data: data,
+                        });
+                    })
+                );
+                responses = rawResponses;
+            } else {
+                responses = new Array(payloads.length);
+                let cursor = 0;
+                const workers: Promise<void>[] = [];
+                const spawn = Math.max(1, Math.min(_concurrency, payloads.length));
+
+                const worker = async () => {
+                    for (;;) {
+                        let idx = -1;
+                        if (cursor < payloads.length) {
+                            idx = cursor;
+                            cursor++;
+                        } else {
+                            break;
+                        }
+
+                        const data = payloads[idx];
+                        batchBar.increment();
+                        try {
+                            const resp = await axios({
+                                url: url,
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json',
+                                },
+                                data: data,
+                            });
+                            responses[idx] = resp;
+                        } catch (err) {
+                            responses[idx] = err;
                         }
                     }
+                };
 
-                    batchBar.increment();
-
-                    return axios({
-                        url: url,
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        data: '[' + singleRequests + ']',
-                    });
-                })
-            );
+                for (let i = 0; i < spawn; i++) {
+                    workers.push(worker());
+                }
+                await Promise.all(workers);
+            }
 
             for (let i = 0; i < responses.length; i++) {
-                const content = responses[i].data;
+                const resp = responses[i];
+                if (!resp || !resp.data) {
+                    batchErrors.push('Invalid response');
+                    continue;
+                }
+                const content = resp.data;
 
                 for (const cnt of content) {
                     // eslint-disable-next-line no-prototype-builtins
                     if (cnt.hasOwnProperty('error')) {
-                        // Error occurred during batch sends
                         batchErrors.push(cnt.error.message);
-
                         continue;
                     }
 
