@@ -37,7 +37,7 @@ if (parentPort) {
                     signedTx: signedTx
                 });
                 
-                if ((i + 1) % 100 == 0 || i === transactions.length - 1) {
+                if ((i + 1) % 256 == 0 || i === transactions.length - 1) {
                     const increment = (i + 1) - lastReported;
                     parentPort?.postMessage({
                         type: 'progress',

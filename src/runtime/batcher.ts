@@ -186,6 +186,7 @@ class Batcher {
 
         batchBar.stop();
 
+        Logger.info(`Sent ${txHashes.length} transactions, writing errors to logfile`);
         if (batchErrors.length > 0) {
             Logger.error('Errors encountered during batch sending:');
 
