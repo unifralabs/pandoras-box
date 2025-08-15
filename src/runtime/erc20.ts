@@ -115,8 +115,8 @@ class ERC20Runtime {
     }
 
     async GetGasPrice(): Promise<BigNumber> {
-        this.gasPrice = await this.provider.getGasPrice();
-        this.gasPrice = BigNumber.from(1000000000000);
+        const currentGasPrice = await this.provider.getGasPrice();
+        this.gasPrice = currentGasPrice.mul(20);
         return this.gasPrice;
     }
 
