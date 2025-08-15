@@ -46,8 +46,8 @@ class Engine {
         const rawTransactions: TransactionRequest[] =
             await runtime.ConstructTransactions(accounts, ctx.numTxs);
 
-        // Sign the transactions
-        const signedTransactions = await signer.signTransactions(
+        // Sign the transactions (using multi-threaded version for better CPU utilization)
+        const signedTransactions = await signer.signTransactionsMultiThreaded(
             accounts,
             rawTransactions
         );

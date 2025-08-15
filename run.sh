@@ -2,9 +2,10 @@
 set -e
 yarn build
 # Set the number of transactions, batch size, and number of subaccounts
-transactions=60000
-batch=30
-subaccounts=200
+# 使用更保守的参数避免 nonce 冲突和 underpriced 错误
+transactions=100000
+batch=20
+subaccounts=500
 concurrency=100
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 

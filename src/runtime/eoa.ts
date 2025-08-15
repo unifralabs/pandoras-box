@@ -72,6 +72,7 @@ class EOARuntime {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Constructing transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info('\nConstructing value transfer transactions...');

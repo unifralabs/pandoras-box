@@ -107,6 +107,7 @@ class ERC721Runtime {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Constructing ERC721 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info(`\nConstructing ${this.nftName} mint transactions...`);
@@ -172,6 +173,7 @@ class ERC721Runtime {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Constructing ERC721 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info(`\nConstructing ${this.nftName} mint transactions (parallel)...`);

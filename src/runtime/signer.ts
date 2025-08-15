@@ -6,6 +6,9 @@ import {
 import { Wallet } from '@ethersproject/wallet';
 import { SingleBar } from 'cli-progress';
 import Logger from '../logger/logger';
+import { Worker } from 'worker_threads';
+import * as os from 'os';
+import * as path from 'path';
 
 class senderAccount {
     mnemonicIndex: number;
@@ -54,6 +57,7 @@ class Signer {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Gathering nonces [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} accounts',
         });
 
         nonceBar.start(walletsToInit, 0, {
@@ -111,7 +115,7 @@ class Signer {
         return accounts;
     }
 
-    async signTransactions(
+    async signTransactions_old(
         accounts: senderAccount[],
         transactions: TransactionRequest[]
     ): Promise<string[]> {
@@ -121,6 +125,7 @@ class Signer {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Signing transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info('\nSigning transactions...');
@@ -165,6 +170,189 @@ class Signer {
         }
 
         return signedTxs;
+    }
+
+    /**
+     * True multi-threaded version using Worker Threads - utilizes multiple CPU cores
+     * @param accounts Array of sender accounts
+     * @param transactions Array of transactions to sign
+     * @param numWorkers Number of worker threads (default: CPU cores)
+     * @returns Array of signed transaction strings
+     */
+    async signTransactionsMultiThreaded(
+        accounts: senderAccount[],
+        transactions: TransactionRequest[],
+        numWorkers?: number
+    ): Promise<string[]> {
+        const cpuCores = os.cpus().length;
+        const workerCount = numWorkers || Math.max(1, Math.min(cpuCores, transactions.length));
+        
+        Logger.info(`\nSigning transactions using ${workerCount} CPU cores...`);
+        
+        const signBar = new SingleBar({
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+            hideCursor: true,
+            format: 'Multi-threaded signing [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
+        });
+
+        signBar.start(transactions.length, 0, {
+            speed: 'N/A',
+        });
+
+        // Check for duplicate nonces before signing to prevent underpriced errors
+        // this.checkForDuplicateNonces(accounts, transactions);
+
+        // Split transactions among workers - keep it simple like signTransactions_old
+        const batchSize = Math.ceil(transactions.length / workerCount);
+        const workerBatches = [];
+        
+        for (let i = 0; i < workerCount; i++) {
+            const start = i * batchSize;
+            const end = Math.min(start + batchSize, transactions.length);
+            if (start < transactions.length) {
+                // Use JSON serialization to maintain structure while making it transferable
+                const batchTransactions = JSON.parse(JSON.stringify(transactions.slice(start, end)));
+                
+                const batchAccountIndexes = [];
+                
+                // Only pass serializable data - account indexes
+                for (let j = start; j < end; j++) {
+                    batchAccountIndexes.push(accounts[j % accounts.length].mnemonicIndex);
+                }
+                
+                workerBatches.push({
+                    transactions: batchTransactions,
+                    accountIndexes: batchAccountIndexes
+                });
+            }
+        }
+
+        // Create and run workers
+        const workerPromises = workerBatches.map((batch, workerIndex) => {
+            return new Promise((resolve, reject) => {
+                const workerPath = path.join(__dirname, 'signing-worker.js');
+                const worker = new Worker(workerPath);
+                
+                worker.on('message', (data) => {
+                    if (data.type === 'progress') {
+                        // Handle incremental progress updates from worker
+                        signBar.increment(data.increment);
+                    } else if (data.success) {
+                        // Final result - all transactions signed
+                        resolve(data.signedTxs);
+                        worker.terminate();
+                    } else {
+                        reject(new Error(`Worker ${workerIndex} failed: ${data.error}`));
+                        worker.terminate();
+                    }
+                });
+
+                worker.on('error', (error) => {
+                    reject(error);
+                    worker.terminate();
+                });
+
+                // Send work to worker - only serializable data
+                worker.postMessage({
+                    transactions: batch.transactions,
+                    accountIndexes: batch.accountIndexes,
+                    mnemonicSeed: this.mnemonic,
+                    hdPath: "m/44'/60'/0'/0"
+                });
+            });
+        });
+
+        try {
+            // Wait for all workers to complete
+            const results = await Promise.all(workerPromises) as string[][];
+            
+            // Flatten results - workers return signed transaction strings directly
+            const allSignedTxs = results.flat();
+            
+            signBar.stop();
+            
+            Logger.success(`Successfully signed ${allSignedTxs.length}/${transactions.length} transactions using ${workerCount} CPU cores`);
+            
+            return allSignedTxs;
+            
+        } catch (error: any) {
+            signBar.stop();
+            Logger.error(`Multi-threaded signing failed: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * Check for duplicate nonces across transactions to identify potential underpriced errors
+     * @param accounts Array of sender accounts
+     * @param transactions Array of transactions to check
+     */
+    private checkForDuplicateNonces(
+        accounts: senderAccount[],
+        transactions: TransactionRequest[]
+    ): void {
+        Logger.info('🔍 Checking for duplicate nonces...');
+        
+        const nonceMap: Map<string, number[]> = new Map();
+        let duplicateCount = 0;
+        
+        // Group transactions by account address and their nonces
+        for (let i = 0; i < transactions.length; i++) {
+            const sender = accounts[i % accounts.length];
+            const address = sender.getAddress();
+            const nonce = transactions[i].nonce;
+            
+            if (nonce !== undefined) {
+                const key = `${address}:${nonce}`;
+                if (!nonceMap.has(key)) {
+                    nonceMap.set(key, []);
+                }
+                nonceMap.get(key)!.push(i);
+            }
+        }
+        
+        // Check for duplicates
+        const accountSummary: Map<string, { total: number, duplicates: number, nonceRange: string }> = new Map();
+        
+        for (const [key, transactionIndexes] of nonceMap.entries()) {
+            const [address, nonceStr] = key.split(':');
+            const nonce = parseInt(nonceStr);
+            
+            if (!accountSummary.has(address)) {
+                accountSummary.set(address, { total: 0, duplicates: 0, nonceRange: '' });
+            }
+            
+            const summary = accountSummary.get(address)!;
+            summary.total += transactionIndexes.length;
+            
+            if (transactionIndexes.length > 1) {
+                summary.duplicates += transactionIndexes.length - 1;
+                duplicateCount += transactionIndexes.length - 1;
+                Logger.warn(`⚠️  Duplicate nonce ${nonce} for account ${address.slice(0, 8)}... (${transactionIndexes.length} transactions)`);
+            }
+        }
+        
+        // Display summary
+        Logger.info(`📊 Nonce Analysis Summary:`);
+        Logger.info(`   Total accounts: ${accountSummary.size}`);
+        Logger.info(`   Total transactions: ${transactions.length}`);
+        Logger.info(`   Duplicate nonce conflicts: ${duplicateCount}`);
+        
+        if (duplicateCount > 0) {
+            Logger.warn(`⚠️  Found ${duplicateCount} nonce conflicts that may cause "replacement transaction underpriced" errors!`);
+            
+            // Show details for each account with conflicts
+            for (const [address, summary] of accountSummary.entries()) {
+                if (summary.duplicates > 0) {
+                    Logger.warn(`   ${address.slice(0, 8)}...: ${summary.total} txs, ${summary.duplicates} conflicts`);
+                }
+            }
+        } else {
+            Logger.success(`✅ No duplicate nonces found - all transactions should process correctly!`);
+        }
+        
+        Logger.info(''); // Empty line for spacing
     }
 }
 

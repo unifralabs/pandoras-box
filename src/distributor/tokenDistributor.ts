@@ -98,6 +98,7 @@ class TokenDistributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Fetching token balances [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} accounts',
         });
 
         Logger.info('\nFetching sub-account token balances...');
@@ -200,6 +201,7 @@ class TokenDistributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Funding token accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         fundBar.start(accounts.length, 0, {
@@ -262,6 +264,7 @@ class TokenDistributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Funding token accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         // Get initial nonce from supplier wallet

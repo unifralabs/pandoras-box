@@ -167,6 +167,7 @@ class StatCollector {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Gathering receipts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         receiptBar.start(txHashes.length, 0, {
@@ -299,7 +300,7 @@ class StatCollector {
             try {
                 // Check pending transaction count to determine if transactions are still being processed
                 const pendingTxCount = await this.getPendingTransactionCount(provider);
-                Logger.debug(`Pending transactions: ${pendingTxCount}`);
+                // Logger.debug(`Pending transactions: ${pendingTxCount}`);
                 
                 // If no pending transactions for a while, consider processing complete
                 if (pendingTxCount === 0 && succeededTransactions.length === txHashes.length) {
@@ -457,6 +458,7 @@ class StatCollector {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Gathering blocks [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} blocks',
         });
 
         blocksBar.start(blockSet.size, 0, {

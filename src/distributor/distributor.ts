@@ -136,6 +136,7 @@ class Distributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Fetching balances [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} accounts',
         });
 
         Logger.info('\nFetching sub-account balances...');
@@ -259,6 +260,7 @@ class Distributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Funding accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} accounts',
         });
 
         fundBar.start(accounts.length, 0, {
@@ -305,6 +307,7 @@ class Distributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Funding accounts (parallel) [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         // Get initial nonce from ETH wallet

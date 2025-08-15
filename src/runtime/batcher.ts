@@ -46,12 +46,13 @@ class Batcher {
             batchSize
         );
 
-        Logger.info('Sending transactions in batches...');
+        Logger.info(`Sending transactions in ${batches.length} batches...`);
 
         const batchBar = new SingleBar({
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'progress [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} batches',
         });
 
         batchBar.start(batches.length, 0, {
@@ -141,7 +142,30 @@ class Batcher {
             for (let i = 0; i < responses.length; i++) {
                 const resp = responses[i];
                 if (!resp || !resp.data) {
-                    batchErrors.push('Invalid response');
+                    // Provide more detailed error information
+                    let errorDetails = `Batch ${i + 1}: `;
+                    if (!resp) {
+                        errorDetails += 'No response received';
+                    } else if (resp.response) {
+                        // This is an axios error with response
+                        errorDetails += `HTTP ${resp.response.status} - ${resp.response.statusText}`;
+                        if (resp.response.data) {
+                            errorDetails += ` - ${JSON.stringify(resp.response.data)}`;
+                        }
+                    } else if (resp.request) {
+                        // Network error
+                        errorDetails += 'Network error - no response received';
+                    } else if (resp.message) {
+                        // Other axios error
+                        errorDetails += `Request error: ${resp.message}`;
+                    } else {
+                        // Response exists but no data field
+                        errorDetails += `Invalid response structure - missing data field. Status: ${resp.status || 'unknown'}`;
+                        if (resp.statusText) {
+                            errorDetails += `, StatusText: ${resp.statusText}`;
+                        }
+                    }
+                    batchErrors.push(errorDetails);
                     continue;
                 }
                 const content = resp.data;
@@ -163,7 +187,7 @@ class Batcher {
         batchBar.stop();
 
         if (batchErrors.length > 0) {
-            Logger.warn('Errors encountered during batch sending:');
+            Logger.error('Errors encountered during batch sending:');
 
             for (const err of batchErrors) {
                 Logger.error(err);

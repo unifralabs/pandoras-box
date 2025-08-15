@@ -138,6 +138,7 @@ class ERC20Runtime {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Constructing ERC20 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info(`\nConstructing ${this.coinName} transfer transactions...`);
@@ -207,6 +208,7 @@ class ERC20Runtime {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
+            format: 'Constructing ERC20 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         Logger.info(`\nConstructing ${this.coinName} transfer transactions (parallel)...`);
