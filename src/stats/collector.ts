@@ -535,44 +535,63 @@ class StatCollector {
         const blockTimeMap: Map<number, number> = new Map<number, number>();
         const uniqueBlocks = new Set<number>();
 
+        // Collect all unique blocks first
         for (const stat of stats) {
             if (stat.block == 0) {
                 continue;
             }
-
-            totalTxs++;
             uniqueBlocks.add(stat.block);
         }
 
-        for (const block of uniqueBlocks) {
-            // Get the parent block to find the generation time
+        // Find the first block to exclude from transaction count
+        const sortedBlocks = Array.from(uniqueBlocks).sort((a, b) => a - b);
+        const firstBlock = sortedBlocks.length > 0 ? sortedBlocks[0] : -1;
+
+        // Count transactions excluding the first block (consistent with individual block TPS logic)
+        let excludedTxs = 0;
+        for (const stat of stats) {
+            if (stat.block == 0) {
+                continue;
+            }
+            if (stat.block == firstBlock) {
+                excludedTxs++;
+                continue;
+            }
+
+            totalTxs++;
+        }
+
+        if (excludedTxs > 0) {
+            Logger.info(`Excluding ${excludedTxs} transactions from first block (block #${firstBlock}) for Overall TPS calculation`);
+        }
+
+        // Calculate total time span from first block to last block
+        if (uniqueBlocks.size > 0) {
             try {
-                const currentBlockNum = block;
-                const parentBlockNum = currentBlockNum - 1;
+                const lastBlock = sortedBlocks[sortedBlocks.length - 1];
 
-                if (!blockTimeMap.has(parentBlockNum)) {
-                    const parentBlock = await provider.getBlock(parentBlockNum);
+                // Get first and last block timestamps
+                const firstBlockInfo = await provider.getBlock(firstBlock);
+                const lastBlockInfo = await provider.getBlock(lastBlock);
 
-                    blockTimeMap.set(parentBlockNum, parentBlock.timestamp);
+                // Total time is the span from first to last block
+                totalTime = Math.abs(lastBlockInfo.timestamp - firstBlockInfo.timestamp);
+                
+                // If all transactions are in a single block, we need to estimate time
+                if (totalTime === 0 && sortedBlocks.length === 1) {
+                    // Use average block time as fallback (assume ~12 seconds for Ethereum)
+                    totalTime = 1;
+                    Logger.warn('All transactions in single block, using estimated block time for TPS calculation');
                 }
-
-                const parentBlock = blockTimeMap.get(parentBlockNum) as number;
-
-                if (!blockTimeMap.has(currentBlockNum)) {
-                    const currentBlock =
-                        await provider.getBlock(currentBlockNum);
-
-                    blockTimeMap.set(currentBlockNum, currentBlock.timestamp);
-                }
-
-                const currentBlock = blockTimeMap.get(
-                    currentBlockNum
-                ) as number;
-
-                totalTime += Math.round(Math.abs(currentBlock - parentBlock));
             } catch (e: any) {
                 blockFetchErrors.push(e);
             }
+        }
+
+        // Handle edge cases
+        if (totalTime === 0 || totalTxs === 0 || sortedBlocks.length < 2) {
+            Logger.warn('Insufficient data to calculate Overall TPS (need at least 2 blocks with transactions)');
+            return 0;
         }
 
         return Math.ceil(totalTxs / totalTime);
