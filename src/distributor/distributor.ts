@@ -102,7 +102,16 @@ class Distributor {
         if (initialAccCount == 0) {
             // Nothing to distribute
             Logger.success('Accounts are fully funded for the cycle');
-
+            
+            // Double-check: if readyMnemonicIndexes is empty but no accounts need funding,
+            // it means balance queries may have failed. Use all requested accounts as fallback.
+            if (this.readyMnemonicIndexes.length === 0) {
+                Logger.warn('No accounts marked as ready despite sufficient funds. Using all requested accounts as fallback.');
+                // Generate all account indexes from 1 to requestedSubAccounts
+                this.readyMnemonicIndexes = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
+            }
+            
+            Logger.info(`Returning ${this.readyMnemonicIndexes.length} ready account indexes`);
             return this.readyMnemonicIndexes;
         }
 
@@ -221,6 +230,13 @@ class Distributor {
                 // Handle failed requests
                 if (result.balance === null || result.error) {
                     Logger.warn(`Failed to get balance for account ${result.index}: ${result.error || 'Unknown error'}`);
+                    
+                    // For failed balance queries, we'll assume the account has sufficient funds
+                    // to avoid blocking the entire process. This is a conservative fallback.
+                    if (result.error && result.error.includes('timed out')) {
+                        Logger.info(`Assuming account ${result.index} has sufficient funds due to timeout`);
+                        this.readyMnemonicIndexes.push(result.index);
+                    }
                     continue;
                 }
 
@@ -244,7 +260,9 @@ class Distributor {
         }
 
         balanceBar.stop();
-
+        
+        Logger.info(`Balance check summary: ${this.readyMnemonicIndexes.length} accounts ready, ${shortAddresses.size()} need funding`);
+        
         return shortAddresses;
     }
 

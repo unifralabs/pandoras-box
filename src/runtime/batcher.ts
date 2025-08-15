@@ -9,28 +9,13 @@ class Batcher {
         items: ItemType[],
         batchSize: number
     ): ItemType[][] {
+        if (batchSize <= 0) {
+            return [];
+        }
         const batches: ItemType[][] = [];
-
-        // Find the required number of batches
-        let numBatches: number = Math.ceil(items.length / batchSize);
-        if (numBatches == 0) {
-            numBatches = 1;
+        for (let i = 0; i < items.length; i += batchSize) {
+            batches.push(items.slice(i, i + batchSize));
         }
-
-        // Initialize empty batches
-        for (let i = 0; i < numBatches; i++) {
-            batches[i] = [];
-        }
-
-        let currentBatch = 0;
-        for (const item of items) {
-            batches[currentBatch].push(item);
-
-            if (batches[currentBatch].length % batchSize == 0) {
-                currentBatch++;
-            }
-        }
-
         return batches;
     }
 

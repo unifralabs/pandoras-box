@@ -103,14 +103,26 @@ class Signer {
             }
         }
 
-        // Create sender accounts
-        const accounts: senderAccount[] = walletData.map(({ accIndex, wallet, accountNonce }) =>
-            new senderAccount(accIndex, accountNonce, wallet)
-        );
+        // Create sender accounts - filter out any invalid entries
+        const accounts: senderAccount[] = walletData
+            .filter(({ wallet }) => wallet !== undefined && wallet !== null)
+            .map(({ accIndex, wallet, accountNonce }) =>
+                new senderAccount(accIndex, accountNonce, wallet)
+            );
 
         nonceBar.stop();
 
-        Logger.success('Gathered initial nonce data\n');
+        // Validate the created accounts
+        if (accounts.length === 0) {
+            Logger.error('Failed to create any valid sender accounts');
+            throw new Error('No valid accounts could be created. Check network connectivity and mnemonic.');
+        }
+
+        if (accounts.length < walletData.length) {
+            Logger.warn(`Created ${accounts.length}/${walletData.length} valid accounts`);
+        }
+
+        Logger.success(`Gathered initial nonce data for ${accounts.length} accounts\n`);
 
         return accounts;
     }

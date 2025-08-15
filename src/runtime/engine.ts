@@ -33,6 +33,15 @@ class EngineContext {
 
 class Engine {
     static async Run(runtime: Runtime, ctx: EngineContext): Promise<string[]> {
+        // Validate input parameters
+        if (!ctx.accountIndexes || ctx.accountIndexes.length === 0) {
+            Logger.error('No account indexes provided. Fund distribution may have failed.');
+            throw new Error('No funded accounts available. Please check the fund distribution process.');
+        }
+
+        Logger.info(`Starting with ${ctx.accountIndexes.length} funded accounts for ${ctx.numTxs} transactions`);
+        Logger.info(`Account indexes: [${ctx.accountIndexes.slice(0, 5).join(', ')}${ctx.accountIndexes.length > 5 ? '...' : ''}]`);
+
         // Initialize transaction signer
         const signer: Signer = new Signer(ctx.mnemonic, ctx.url);
 

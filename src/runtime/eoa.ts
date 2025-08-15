@@ -52,6 +52,23 @@ class EOARuntime {
         accounts: senderAccount[],
         numTx: number
     ): Promise<TransactionRequest[]> {
+        // Validate accounts array
+        if (!accounts || accounts.length === 0) {
+            throw new Error('No accounts available for transaction construction. Please check fund distribution.');
+        }
+
+        // Check for undefined accounts
+        const validAccounts = accounts.filter(acc => acc !== undefined && acc !== null);
+        if (validAccounts.length !== accounts.length) {
+            Logger.warn(`Found ${accounts.length - validAccounts.length} invalid accounts. Using ${validAccounts.length} valid accounts.`);
+        }
+
+        if (validAccounts.length === 0) {
+            throw new Error('All accounts are invalid. Cannot construct transactions.');
+        }
+
+        Logger.info(`Using ${validAccounts.length} funded accounts for ${numTx} transactions`);
+
         const queryWallet = Wallet.fromMnemonic(
             this.mnemonic,
             `m/44'/60'/0'/0/0`
@@ -78,11 +95,17 @@ class EOARuntime {
         const transactions: TransactionRequest[] = [];
 
         for (let i = 0; i < numTx; i++) {
-            const senderIndex = i % accounts.length;
-            const receiverIndex = (i + 1) % accounts.length;
+            const senderIndex = i % validAccounts.length;
+            const receiverIndex = (i + 1) % validAccounts.length;
 
-            const sender = accounts[senderIndex];
-            const receiver = accounts[receiverIndex];
+            const sender = validAccounts[senderIndex];
+            const receiver = validAccounts[receiverIndex];
+
+            // Additional safety check
+            if (!sender || !receiver) {
+                Logger.error(`Invalid account at transaction ${i}: sender=${!!sender}, receiver=${!!receiver}`);
+                throw new Error(`Invalid accounts at transaction index ${i}`);
+            }
 
             transactions.push({
                 from: sender.getAddress(),

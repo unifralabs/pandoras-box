@@ -120,76 +120,6 @@ class ERC20Runtime {
         return this.gasPrice;
     }
 
-    async ConstructTransactions_old(
-        accounts: senderAccount[],
-        numTx: number
-    ): Promise<TransactionRequest[]> {
-        if (!this.contract) {
-            throw RuntimeErrors.errRuntimeNotInitialized;
-        }
-
-        const chainID = await this.baseDeployer.getChainId();
-        const gasPrice = this.gasPrice;
-
-        Logger.info(`Chain ID: ${chainID}`);
-        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
-
-        const constructBar = new SingleBar({
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
-            hideCursor: true,
-            format: 'Constructing ERC20 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
-        });
-
-        Logger.info(`\nConstructing ${this.coinName} transfer transactions...`);
-        constructBar.start(numTx, 0, {
-            speed: 'N/A',
-        });
-
-        const transactions: TransactionRequest[] = [];
-
-        for (let i = 0; i < numTx; i++) {
-            const senderIndex = i % accounts.length;
-            const receiverIndex = (i + 1) % accounts.length;
-
-            const sender = accounts[senderIndex];
-            const receiver = accounts[receiverIndex];
-
-            const wallet = Wallet.fromMnemonic(
-                this.mnemonic,
-                `m/44'/60'/0'/0/${senderIndex}`
-            ).connect(this.provider);
-
-            const contract = new Contract(
-                this.contract.address,
-                ZexCoin.abi,
-                wallet
-            );
-
-            const transaction = await contract.populateTransaction.transfer(
-                receiver.getAddress(),
-                this.defaultTransferValue
-            );
-
-            // Override the defaults
-            transaction.from = sender.getAddress();
-            transaction.chainId = chainID;
-            transaction.gasPrice = gasPrice;
-            transaction.gasLimit = this.gasEstimation;
-            transaction.nonce = sender.getNonce();
-
-            transactions.push(transaction);
-
-            sender.incrNonce();
-            constructBar.increment();
-        }
-
-        constructBar.stop();
-        Logger.success(`Successfully constructed ${numTx} transactions`);
-
-        return transactions;
-    }
-
     async ConstructTransactions(
         accounts: senderAccount[],
         numTx: number
@@ -218,7 +148,7 @@ class ERC20Runtime {
 
         // Pre-create wallets and contracts to avoid repeated creation
         const walletCache = new Map<number, { wallet: Wallet; contract: Contract }>();
-        
+
         const createWalletAndContract = (senderIndex: number) => {
             if (!walletCache.has(senderIndex)) {
                 const wallet = Wallet.fromMnemonic(
@@ -266,7 +196,8 @@ class ERC20Runtime {
                         // Override the defaults
                         transaction.from = sender.getAddress();
                         transaction.chainId = chainID;
-                        transaction.gasPrice = gasPrice;
+                        const timeWeight = BigNumber.from(Math.floor((Date.now() / 1000) - 1755258000));
+                        transaction.gasPrice = gasPrice.add(timeWeight);
                         transaction.gasLimit = this.gasEstimation;
                         transaction.nonce = sender.getNonce();
 
@@ -282,7 +213,7 @@ class ERC20Runtime {
                     } catch (error: any) {
                         Logger.warn(`Failed to construct transaction ${j}: ${error.message}`);
                         constructBar.increment();
-                        
+
                         return {
                             index: j,
                             transaction: null,
