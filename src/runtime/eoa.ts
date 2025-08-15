@@ -18,9 +18,7 @@ class EOARuntime {
     gasEstimation: BigNumber = BigNumber.from(0);
     gasPrice: BigNumber = BigNumber.from(0);
 
-    // The default value for the E0A to E0A transfers
-    // is 0.0001 native currency
-    defaultValue: BigNumber = parseUnits('0.00000001');
+    defaultValue: BigNumber = BigNumber.from(1);
 
     constructor(mnemonic: string, url: string) {
         this.mnemonic = mnemonic;

@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 yarn build
-transactions=50000
-batch=70
-subaccounts=1000
-concurrency=70
+transactions=100000
+batch=200
+subaccounts=5000
+concurrency=50
 
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467

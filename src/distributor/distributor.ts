@@ -9,6 +9,26 @@ import Logger from '../logger/logger';
 import { Runtime } from '../runtime/runtimes';
 import DistributorErrors from './errors';
 
+// Timeout constants (in milliseconds)
+const TIMEOUT_CONSTANTS = {
+    QUICK_OPERATION: 5000,    // 5 seconds for quick network calls (gas price, nonce, etc.)
+    BALANCE_QUERY: 5000,      // 5 seconds for balance queries
+    TRANSACTION_SEND: 15000,   // 15 seconds for sending transactions
+    TRANSACTION_CONFIRM: 18000 // 18 seconds for transaction confirmation
+} as const;
+
+// Helper function to add timeout to promises
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation: string): Promise<T> {
+    return Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+            setTimeout(() => {
+                reject(new Error(`Operation '${operation}' timed out after ${timeoutMs}ms`));
+            }, timeoutMs);
+        })
+    ]);
+}
+
 class distributeAccount {
     missingFunds: BigNumber;
     address: string;
@@ -108,8 +128,16 @@ class Distributor {
 
     async calculateRuntimeCosts(): Promise<runtimeCosts> {
         const inherentValue = this.runtimeEstimator.GetValue();
-        const baseTxEstimate = await this.runtimeEstimator.EstimateBaseTx();
-        const baseGasPrice = await this.runtimeEstimator.GetGasPrice();
+        const baseTxEstimate = await withTimeout(
+            this.runtimeEstimator.EstimateBaseTx(),
+            TIMEOUT_CONSTANTS.QUICK_OPERATION,
+            'EstimateBaseTx'
+        );
+        const baseGasPrice = await withTimeout(
+            this.runtimeEstimator.GetGasPrice(),
+            TIMEOUT_CONSTANTS.QUICK_OPERATION,
+            'GetGasPrice'
+        );
 
         const baseTxCost = baseGasPrice.mul(baseTxEstimate).add(inherentValue);
 
@@ -119,12 +147,16 @@ class Distributor {
         const subAccountCost = BigNumber.from(this.totalTx).mul(baseTxCost);
 
         // Calculate the cost of the single distribution transaction
-        const singleDistributionCost = await this.provider.estimateGas({
-            from: Wallet.fromMnemonic(this.mnemonic, `m/44'/60'/0'/0/0`)
-                .address,
-            to: Wallet.fromMnemonic(this.mnemonic, `m/44'/60'/0'/0/1`).address,
-            value: subAccountCost,
-        });
+        const singleDistributionCost = await withTimeout(
+            this.provider.estimateGas({
+                from: Wallet.fromMnemonic(this.mnemonic, `m/44'/60'/0'/0/0`)
+                    .address,
+                to: Wallet.fromMnemonic(this.mnemonic, `m/44'/60'/0'/0/1`).address,
+                value: subAccountCost,
+            }),
+            TIMEOUT_CONSTANTS.QUICK_OPERATION,
+            'estimateGas for distribution transaction'
+        );
 
         return new runtimeCosts(singleDistributionCost, subAccountCost);
     }
@@ -162,7 +194,12 @@ class Distributor {
                     `m/44'/60'/0'/0/${index}`
                 ).connect(this.provider);
 
-                return addrWallet.getBalance().then(balance => ({
+                // Add timeout to balance request
+                return withTimeout(
+                    addrWallet.getBalance(),
+                    TIMEOUT_CONSTANTS.BALANCE_QUERY,
+                    `getBalance for account ${index}`
+                ).then(balance => ({
                     index: index,
                     balance: balance,
                     address: addrWallet.address,
@@ -232,7 +269,11 @@ class Distributor {
         // Check if the root wallet has enough funds to distribute
         const accountsToFund: distributeAccount[] = [];
         let distributorBalance = BigNumber.from(
-            await this.ethWallet.getBalance()
+            await withTimeout(
+                this.ethWallet.getBalance(),
+                TIMEOUT_CONSTANTS.QUICK_OPERATION,
+                'getBalance for distributor wallet'
+            )
         );
 
         while (
@@ -263,14 +304,22 @@ class Distributor {
             nonce: number
         ): Promise<void> => {
             // Send ETH transaction with explicit nonce
-            const tx = await this.ethWallet.sendTransaction({
-                to: to,
-                value: value,
-                nonce: nonce
-            });
+            const tx = await withTimeout(
+                this.ethWallet.sendTransaction({
+                    to: to,
+                    value: value,
+                    nonce: nonce
+                }),
+                TIMEOUT_CONSTANTS.TRANSACTION_SEND,
+                `sendTransaction to ${to} with nonce ${nonce}`
+            );
 
             // Wait for transaction to be mined
-            await tx.wait();
+            await withTimeout(
+                tx.wait(),
+                TIMEOUT_CONSTANTS.TRANSACTION_CONFIRM,
+                `wait for transaction ${tx.hash} confirmation`
+            );
         };
 
         // Clear the list of ready indexes
@@ -283,8 +332,12 @@ class Distributor {
             format: 'Funding accounts (parallel) [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
-        // Get initial nonce from ETH wallet
-        let currentNonce = await this.ethWallet.getTransactionCount();
+        // Get initial nonce from ETH wallet (with timeout)
+        let currentNonce = await withTimeout(
+            this.ethWallet.getTransactionCount(),
+            TIMEOUT_CONSTANTS.QUICK_OPERATION,
+            'getTransactionCount for ETH wallet'
+        );
         
         Logger.info(`Starting with ETH wallet nonce: ${currentNonce}`);
 
