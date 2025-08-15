@@ -46,7 +46,7 @@ class EOARuntime {
 
     async GetGasPrice(): Promise<BigNumber> {
         const currentGasPrice = await this.provider.getGasPrice();
-        this.gasPrice = currentGasPrice.mul(20);
+        this.gasPrice = currentGasPrice.mul(4);
         return this.gasPrice;
     }
 
