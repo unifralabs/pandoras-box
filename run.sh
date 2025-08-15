@@ -1,8 +1,6 @@
 #!/bin/bash
 set -e
 yarn build
-# Set the number of transactions, batch size, and number of subaccounts
-# 使用更保守的参数避免 nonce 冲突和 underpriced 错误
 transactions=100000
 batch=100
 subaccounts=500

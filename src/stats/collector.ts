@@ -617,14 +617,35 @@ class StatCollector {
         });
         const avgUtilization = totalUtilization / blockInfoMap.size;
 
+        // Calculate TPS statistics
+        const tpsValues: number[] = [];
+        blockInfoMap.forEach((info) => {
+            if (info.tps > 0) { // Only include non-zero TPS values
+                tpsValues.push(info.tps);
+            }
+        });
+
+        let maxTps = 0;
+        let minTps = 0;
+        let avgTps = 0;
+
+        if (tpsValues.length > 0) {
+            maxTps = Math.max(...tpsValues);
+            minTps = Math.min(...tpsValues);
+            avgTps = tpsValues.reduce((sum, val) => sum + val, 0) / tpsValues.length;
+        }
+
         const finalDataTable = new Table({
-            head: ['TPS', 'Blocks', 'Avg. Utilization'],
+            head: ['Overall TPS', 'Blocks', 'Avg. Utilization', 'Max TPS', 'Min TPS', 'Avg TPS'],
         });
 
         finalDataTable.push([
             tps,
             blockInfoMap.size,
             `${avgUtilization.toFixed(2)}%`,
+            maxTps,
+            minTps > 0 ? minTps : 'N/A',
+            avgTps > 0 ? avgTps.toFixed(1) : 'N/A',
         ]);
 
         Logger.info(finalDataTable.toString());

@@ -20,7 +20,7 @@ class EOARuntime {
 
     // The default value for the E0A to E0A transfers
     // is 0.0001 native currency
-    defaultValue: BigNumber = parseUnits('0.0001');
+    defaultValue: BigNumber = parseUnits('0.0000001');
 
     constructor(mnemonic: string, url: string) {
         this.mnemonic = mnemonic;

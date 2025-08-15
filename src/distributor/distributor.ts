@@ -253,33 +253,6 @@ class Distributor {
         return accountsToFund;
     }
 
-    async fundAccounts_old(costs: runtimeCosts, accounts: distributeAccount[]) {
-        Logger.info('\nFunding accounts...');
-
-        const fundBar = new SingleBar({
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
-            hideCursor: true,
-            format: 'Funding accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} accounts',
-        });
-
-        fundBar.start(accounts.length, 0, {
-            speed: 'N/A',
-        });
-
-        for (const acc of accounts) {
-            await this.ethWallet.sendTransaction({
-                to: acc.address,
-                value: acc.missingFunds,
-            });
-
-            fundBar.increment();
-            this.readyMnemonicIndexes.push(acc.mnemonicIndex);
-        }
-
-        fundBar.stop();
-    }
-
     async fundAccounts(costs: runtimeCosts, accounts: distributeAccount[]) {
         Logger.info('\nFunding accounts (parallel with nonce management)...');
 
