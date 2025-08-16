@@ -8,6 +8,7 @@ import Logger from '../logger/logger';
 import { TokenRuntime } from '../runtime/runtimes';
 import { distributeAccount } from './distributor';
 import DistributorErrors from './errors';
+import { parseEther } from '@ethersproject/units';
 
 class tokenRuntimeCosts {
     totalCost: number;
@@ -159,7 +160,7 @@ class TokenDistributor {
                     // on the list to get topped off
                     shortAddresses.push(
                         new distributeAccount(
-                            BigNumber.from(singleRunCost - result.balance),
+                            parseEther('0.001'),
                             result.address,
                             result.index
                         )
