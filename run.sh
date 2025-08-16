@@ -1,10 +1,10 @@
 #!/bin/bash
 set -e
 yarn build
-transactions=500
+transactions=10000
 batch=20
-subaccounts=500
-concurrency=50
+subaccounts=5000
+concurrency=100
 
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
@@ -19,6 +19,8 @@ mkdir -p ${out}
 --mode EOA \
 -o ./${out}/EOA_${transactions}_${batch}_${subaccounts}.json
 sleep 30
+
+exit 0
 
 ./bin/index.js -url https://rpc.shude.unifra.xyz -m "$MNEMONIC" \
 -t $transactions \
