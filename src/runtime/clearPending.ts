@@ -1,58 +1,91 @@
-import { BigNumber } from '@ethersproject/bignumber';
 import { JsonRpcProvider, Provider } from '@ethersproject/providers';
 import { Wallet } from '@ethersproject/wallet';
 import Logger from '../logger/logger';
+import GetPendingCountRuntime from './getPendingCountRuntime';
 
 class ClearPendingRuntime {
     mnemonic: string;
     url: string;
     provider: Provider;
+    accountCount: number;
 
-    constructor(mnemonic: string, url: string) {
+    constructor(mnemonic: string, url: string, accountCount: number) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
+        this.accountCount = accountCount;
     }
 
     public async run() {
-        Logger.title('\n🧹 Clearing pending transactions 🧹\n');
+        Logger.title(`
+🧹 Clearing pending transactions for ${this.accountCount} accounts 🧹
+`);
 
         try {
-            // 1. Create a wallet instance for the primary account
-            const wallet = Wallet.fromMnemonic(this.mnemonic, `m/44'/60'/0'/0/0`).connect(this.provider);
-            Logger.info(`Using primary account: ${wallet.address}`);
-
-            // 2. Get the current nonce for this account
-            const nonce = await wallet.getTransactionCount('latest');
-            Logger.info(`Using nonce: ${nonce} (to replace the oldest pending transaction)`);
-
-            // 3. Get the current gas price and calculate a high gas price
             const currentGasPrice = await this.provider.getGasPrice();
-            const highGasPrice = currentGasPrice.mul(20); // Using 20x multiplier
+            // Using a 20x multiplier to ensure the transaction is prioritized
+            const highGasPrice = currentGasPrice.mul(20); 
             Logger.info(`Current gas price: ${currentGasPrice.toString()} wei`);
-            Logger.info(`Using high gas price: ${highGasPrice.toString()} wei (20x)`);
+            Logger.info(`Using high gas price for clearing: ${highGasPrice.toString()} wei (20x)`);
 
-            // 4. Construct and send the transaction
-            const tx = {
-                to: wallet.address,
-                from: wallet.address,
-                nonce: nonce,
-                value: 0,
-                gasPrice: highGasPrice,
-                gasLimit: 21000, // Standard gas limit for a simple ETH transfer
-            };
+            const clearingPromises: Promise<any>[] = [];
 
-            Logger.info('Sending transaction to clear pending queue...');
-            const response = await wallet.sendTransaction(tx);
+            for (let i = 0; i < this.accountCount; i++) {
+                const walletPath = `m/44'/60'/0'/0/${i}`;
+                const wallet = Wallet.fromMnemonic(this.mnemonic, walletPath).connect(this.provider);
+                
+                // Create a self-executing async function to push to the promise array
+                const clearingPromise = (async () => {
+                    try {
+                        const nonce = await wallet.getTransactionCount('latest');
+                        Logger.info(`Preparing to clear account ${i} (${wallet.address}) with nonce ${nonce}`);
 
-            Logger.success('Replacement transaction sent successfully!');
-            Logger.info(`Transaction hash: ${response.hash}`);
-            Logger.info('Please check a block explorer to confirm it has been mined.');
+                        const tx = {
+                            to: wallet.address,
+                            from: wallet.address,
+                            nonce: nonce,
+                            value: 0,
+                            gasPrice: highGasPrice,
+                            gasLimit: 21000, // Standard gas limit for a simple ETH transfer
+                        };
+                        
+                        return await wallet.sendTransaction(tx);
+                    } catch (e: any) {
+                        Logger.error(`Failed to prepare clearing tx for account ${i} (${wallet.address}): ${e.message}`);
+                        // Return a specific error structure to identify failures
+                        return { error: true, message: e.message, address: wallet.address };
+                    }
+                })();
+                clearingPromises.push(clearingPromise);
+            }
+
+            Logger.info(`Sending ${clearingPromises.length} clearing transactions in parallel...`);
+            const results = await Promise.allSettled(clearingPromises);
+
+            results.forEach((result, index) => {
+                if (result.status === 'fulfilled' && !result.value.error) {
+                    Logger.success(`  -> Sent for account ${index}. Tx Hash: ${result.value.hash}`);
+                } else if (result.status === 'fulfilled' && result.value.error) {
+                    Logger.error(`  -> Failed for account ${index} (${result.value.address}): ${result.value.message}`);
+                } else if (result.status === 'rejected') {
+                    Logger.error(`  -> Unexpected failure for account ${index}: ${result.reason}`);
+                }
+            });
+            
+            Logger.info('All clearing transaction attempts are complete.');
 
         } catch (error: any) {
-            Logger.error('An error occurred while trying to clear pending transactions:');
+            Logger.error('A critical error occurred during the clearing process:');
             Logger.error(error.message);
         }
+
+        // Wait for 5 seconds as requested
+        Logger.info('Waiting 5 seconds before checking pending transaction count...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+
+        // Get and print the pending transaction count
+        const getPendingCountRuntime = new GetPendingCountRuntime(this.url);
+        await getPendingCountRuntime.run();
     }
 }
 

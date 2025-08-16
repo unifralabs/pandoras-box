@@ -9,7 +9,8 @@ import { Engine, EngineContext } from './runtime/engine';
 import EOARuntime from './runtime/eoa';
 import ERC20Runtime from './runtime/erc20';
 import ERC721Runtime from './runtime/erc721';
-import ClearPendingRuntime from './runtime/clearPending'; // Import new runtime
+import ClearPendingRuntime from './runtime/clearPending';
+import GetPendingCountRuntime from './runtime/getPendingCountRuntime';
 import RuntimeErrors from './runtime/errors';
 import {
     InitializedRuntime,
@@ -38,8 +39,8 @@ async function run() {
             'The mnemonic used to generate spam accounts'
         )
         .option(
-            '-s, -sub-accounts <sub-accounts>',
-            'The number of sub-accounts that will send out transactions',
+            '-s, --sub-accounts <sub-accounts>',
+            'The number of sub-accounts to use',
             '10'
         )
         .option(
@@ -49,7 +50,7 @@ async function run() {
         )
         .option(
             '--mode <mode>',
-            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING]',
+            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING, GET_PENDING_COUNT]',
             'EOA'
         )
         .option(
@@ -78,9 +79,16 @@ async function run() {
     const output = options.output;
     const concurrency = options.concurrency;
 
+    // Handle the GET_PENDING_COUNT mode as a standalone utility
+    if (mode === RuntimeType.GET_PENDING_COUNT) {
+        const getPendingCountRuntime = new GetPendingCountRuntime(url);
+        await getPendingCountRuntime.run();
+        return; // Exit after getting the count
+    }
+
     // Handle the CLEAR_PENDING mode as a standalone utility
     if (mode === RuntimeType.CLEAR_PENDING) {
-        const clearPendingRuntime = new ClearPendingRuntime(mnemonic, url);
+        const clearPendingRuntime = new ClearPendingRuntime(mnemonic, url, parseInt(subAccountsCount));
         await clearPendingRuntime.run();
         return; // Exit after clearing pending transactions
     }
