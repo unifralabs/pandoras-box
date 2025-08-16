@@ -174,7 +174,8 @@ async function run() {
             mnemonic,
             accountIndexes,
             transactionCount,
-            runtime as TokenRuntime
+            runtime as TokenRuntime,
+            concurrency
         );
 
         // Start the distribution

@@ -27,17 +27,20 @@ class TokenDistributor {
 
     totalTx: number;
     readyMnemonicIndexes: number[];
+    concurrency?: number;
 
     constructor(
         mnemonic: string,
         readyMnemonicIndexes: number[],
         totalTx: number,
-        tokenRuntime: TokenRuntime
+        tokenRuntime: TokenRuntime,
+        concurrency?: number | string
     ) {
         this.totalTx = totalTx;
         this.mnemonic = mnemonic;
         this.tokenRuntime = tokenRuntime;
         this.readyMnemonicIndexes = readyMnemonicIndexes;
+        this.concurrency = concurrency !== undefined ? Number.parseInt(concurrency as any, 10) : undefined;
     }
 
     async distributeTokens(): Promise<number[]> {
@@ -278,12 +281,12 @@ class TokenDistributor {
             speed: 'N/A',
         });
 
-        const batchSize = 50; // Can use larger batches now that nonce is managed locally
+        const concurrency = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Can use larger batches now that nonce is managed locally
         const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
 
         // Process accounts in batches with managed nonce
-        for (let i = 0; i < accounts.length; i += batchSize) {
-            const batch = accounts.slice(i, i + batchSize);
+        for (let i = 0; i < accounts.length; i += concurrency) {
+            const batch = accounts.slice(i, i + concurrency);
             
             const batchPromises = batch.map(async (acc, batchIndex) => {
                 // Assign nonce locally and increment for each transaction

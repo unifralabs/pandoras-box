@@ -190,10 +190,10 @@ class Distributor {
         const accountIndices = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
         
         // Process accounts in batches to avoid overwhelming RPC endpoint
-        const balanceScanBatchSize = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of balances fetched in parallel per wave
+        const concurrency = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of balances fetched in parallel per wave
         
-        for (let i = 0; i < accountIndices.length; i += balanceScanBatchSize) {
-            const accountIndexBatch = accountIndices.slice(i, i + balanceScanBatchSize);
+        for (let i = 0; i < accountIndices.length; i += concurrency) {
+            const accountIndexBatch = accountIndices.slice(i, i + concurrency);
             
             const balanceBatchPromises = accountIndexBatch.map(index => {
                 const addrWallet = Wallet.fromMnemonic(
@@ -358,12 +358,12 @@ class Distributor {
             speed: 'N/A',
         });
 
-        const fundingBatchSize = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of transfers sent in parallel per wave
+        const concurrency = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Number of transfers sent in parallel per wave
         const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
 
         // Process accounts in batches with managed nonce
-        for (let i = 0; i < accounts.length; i += fundingBatchSize) {
-            const fundingBatch = accounts.slice(i, i + fundingBatchSize);
+        for (let i = 0; i < accounts.length; i += concurrency) {
+            const fundingBatch = accounts.slice(i, i + concurrency);
             
             const fundingBatchPromises = fundingBatch.map(async (acc, batchIndex) => {
                 // Assign nonce locally and increment for each transaction
