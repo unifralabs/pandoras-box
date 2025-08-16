@@ -9,7 +9,7 @@ import { Engine, EngineContext } from './runtime/engine';
 import EOARuntime from './runtime/eoa';
 import ERC20Runtime from './runtime/erc20';
 import ERC721Runtime from './runtime/erc721';
-import ClearPendingRuntime from './runtime/clearPending';
+import ClearPendingRuntime from './runtime/clearPendingRuntime';
 import GetPendingCountRuntime from './runtime/getPendingCountRuntime';
 import RuntimeErrors from './runtime/errors';
 import {
@@ -18,6 +18,7 @@ import {
     TokenRuntime,
 } from './runtime/runtimes';
 import { StatCollector } from './stats/collector';
+import { parseUnits } from '@ethersproject/units'; // ADDED
 
 async function run() {
     const program = new Command();
@@ -34,7 +35,7 @@ async function run() {
             '-u, --json-rpc <json-rpc-address>',
             'The URL of the JSON-RPC for the client'
         )
-        .requiredOption(
+        .option(
             '-m, --mnemonic <mnemonic>',
             'The mnemonic used to generate spam accounts'
         )
@@ -47,6 +48,16 @@ async function run() {
             '-t, --transactions <transactions>',
             'The total number of transactions to be emitted',
             '2000'
+        )
+        .option(
+            '--num-accounts <number>',
+            'The number of accounts to use for CLEAR_PENDING mode',
+            '1000'
+        )
+        .option(
+            '--yes',
+            'Automatically say yes to confirmation prompts for CLEAR_PENDING mode',
+            false
         )
         .option(
             '--mode <mode>',
@@ -71,13 +82,16 @@ async function run() {
     const options = program.opts();
 
     const url = options.jsonRpc;
-    const transactionCount = options.transactions;
+    let transactionCount = options.transactions;
     const mode = options.mode;
     const mnemonic = options.mnemonic;
-    const subAccountsCount = options.SubAccounts;
+    const subAccountsCount = options.subAccounts;
     const batchSize = options.batch;
     const output = options.output;
     const concurrency = options.concurrency;
+    const numAccounts = parseInt(options.numAccounts, 10);
+    const autoConfirm = options.yes;
+
 
     // Handle the GET_PENDING_COUNT mode as a standalone utility
     if (mode === RuntimeType.GET_PENDING_COUNT) {
@@ -86,32 +100,36 @@ async function run() {
         return; // Exit after getting the count
     }
 
-    // Handle the CLEAR_PENDING mode as a standalone utility
     if (mode === RuntimeType.CLEAR_PENDING) {
-        const clearPendingRuntime = new ClearPendingRuntime(mnemonic, url, parseInt(subAccountsCount));
+        if (!mnemonic) {
+            Logger.error('Error: Mnemonic is required for CLEAR_PENDING mode. Please provide one with -m');
+            return;
+        }
+        const clearPendingRuntime = new ClearPendingRuntime(url, mnemonic, numAccounts, concurrency, autoConfirm);
         await clearPendingRuntime.run();
-        return; // Exit after clearing pending transactions
+        return;
     }
 
+
     let runtime: Runtime;
+
+    // Handle the CLEAR_PENDING mode (now implemented via EOA)
+    if (!mnemonic) {
+        Logger.error(`Error: Mnemonic is required for ${mode} mode. Please provide one with -m`);
+        return;
+    }
+
     switch (mode) {
         case RuntimeType.EOA:
             runtime = new EOARuntime(mnemonic, url);
-
             break;
         case RuntimeType.ERC20:
             runtime = new ERC20Runtime(mnemonic, url);
-
-            // Initialize the runtime
             await (runtime as InitializedRuntime).Initialize();
-
             break;
         case RuntimeType.ERC721:
             runtime = new ERC721Runtime(mnemonic, url);
-
-            // Initialize the runtime
             await (runtime as InitializedRuntime).Initialize();
-
             break;
         default:
             throw RuntimeErrors.errUnknownRuntime;
