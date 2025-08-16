@@ -527,14 +527,11 @@ class StatCollector {
         return blocksMap;
     }
 
-    async calcTPS(stats: txStats[], provider: Provider): Promise<number> {
+    calcTPS(stats: txStats[], blockInfoMap: Map<number, BlockInfo>): number {
         Logger.title('\n🧮 Calculating TPS data 🧮\n');
         let totalTxs = 0;
         let totalTime = 0;
 
-        // Find the average txn time per block
-        const blockFetchErrors = [];
-        const blockTimeMap: Map<number, number> = new Map<number, number>();
         const uniqueBlocks = new Set<number>();
 
         // Collect all unique blocks first
@@ -545,51 +542,55 @@ class StatCollector {
             uniqueBlocks.add(stat.block);
         }
 
-        // Find the first block to exclude from transaction count
         const sortedBlocks = Array.from(uniqueBlocks).sort((a, b) => a - b);
-        const firstBlock = sortedBlocks.length > 0 ? sortedBlocks[0] : -1;
+
+        // Handle edge cases: we need at least two blocks with transactions to calculate a TPS range.
+        if (sortedBlocks.length < 2) {
+            Logger.warn(
+                'Insufficient data to calculate Overall TPS (need at least 2 blocks with transactions)'
+            );
+            return 0;
+        }
+
+        const firstBlock = sortedBlocks[0];
 
         // Count transactions excluding the first block (consistent with individual block TPS logic)
-        let excludedTxs = 0;
         for (const stat of stats) {
-            if (stat.block == 0) {
-                continue;
-            }
             if (stat.block == firstBlock) {
-                excludedTxs++;
                 continue;
             }
-
-            totalTxs++;
+            if (stat.block !== 0) {
+                totalTxs++;
+            }
         }
 
         // Calculate total time span from first block to last block
-        if (uniqueBlocks.size > 0) {
-            try {
-                const lastBlock = sortedBlocks[sortedBlocks.length - 1];
+        const lastBlock = sortedBlocks[sortedBlocks.length - 1];
 
-                // Get first and last block timestamps
-                const firstBlockInfo = await provider.getBlock(firstBlock);
-                const lastBlockInfo = await provider.getBlock(lastBlock);
+        const firstBlockInfo = blockInfoMap.get(firstBlock);
+        const lastBlockInfo = blockInfoMap.get(lastBlock);
 
-                // Total time is the span from first to last block
-                totalTime = Math.abs(lastBlockInfo.timestamp - firstBlockInfo.timestamp);
-                
-                // If all transactions are in a single block, we need to estimate time
-                if (totalTime === 0 && sortedBlocks.length === 1) {
-                    // Use average block time as fallback (assume ~12 seconds for Ethereum)
-                    totalTime = 1;
-                    Logger.warn('All transactions in single block, using estimated block time for TPS calculation');
-                }
-            } catch (e: any) {
-                blockFetchErrors.push(e);
-            }
+        if (!firstBlockInfo || !lastBlockInfo) {
+            Logger.error(
+                'Failed to find first or last block info in the pre-fetched map during TPS calculation.'
+            );
+            return 0;
         }
 
-        // Handle edge cases
-        if (totalTime === 0 || totalTxs === 0 || sortedBlocks.length < 2) {
-            Logger.warn('Insufficient data to calculate Overall TPS (need at least 2 blocks with transactions)');
+        totalTime = Math.abs(lastBlockInfo.createdAt - firstBlockInfo.createdAt);
+
+        if (totalTxs === 0) {
+            Logger.warn(
+                'No transactions found in blocks after the first one. Cannot calculate Overall TPS.'
+            );
             return 0;
+        }
+
+        if (totalTime === 0) {
+            Logger.warn(
+                'First and last blocks have the same timestamp. Using a minimum of 1s for TPS calculation to avoid division by zero.'
+            );
+            totalTime = 1;
         }
 
         return Math.ceil(totalTxs / totalTime);
@@ -700,7 +701,7 @@ class StatCollector {
         this.printBlockData(blockInfoMap);
 
         // Print the final TPS and avg. utilization data
-        const avgTPS = await this.calcTPS(txStats, provider);
+        const avgTPS = this.calcTPS(txStats, blockInfoMap);
         this.printFinalData(avgTPS, blockInfoMap);
 
         return new CollectorData(avgTPS, blockInfoMap);

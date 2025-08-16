@@ -2,9 +2,9 @@
 
 yarn build
 transactions=1000
-batch=30
+batch=1
 subaccounts=100
-concurrency=100
+concurrency=10
 
 RPC="https://rpc.shude.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
