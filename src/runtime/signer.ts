@@ -196,8 +196,9 @@ class Signer {
         transactions: TransactionRequest[][],
         numWorkers?: number
     ): Promise<string[][]> {
+        const flatTransactions = transactions.flat();
         const cpuCores = os.cpus().length;
-        const workerCount = numWorkers || Math.max(1, Math.min(cpuCores, transactions.length));
+        const workerCount = numWorkers || Math.max(1, Math.min(cpuCores, flatTransactions.length));
         
         Logger.info(`\nSigning transactions using ${workerCount} CPU cores...`);
         
@@ -208,35 +209,28 @@ class Signer {
             format: 'Multi-threaded signing [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
-        signBar.start(transactions.length, 0, {
+        signBar.start(flatTransactions.length, 0, {
             speed: 'N/A',
         });
 
-        // Check for duplicate nonces before signing to prevent underpriced errors
-        // this.checkForDuplicateNonces(accounts, transactions);
+        const txAccountMap: { tx: TransactionRequest, accountIndex: number }[] = [];
+        transactions.forEach((txs, accountIndex) => {
+            txs.forEach(tx => {
+                txAccountMap.push({ tx, accountIndex });
+            });
+        });
 
-        // Split transactions among workers - keep it simple like signTransactions_old
-        const batchSize = Math.ceil(transactions.length / workerCount);
+        const batchSize = Math.ceil(txAccountMap.length / workerCount);
         const workerBatches = [];
         
         for (let i = 0; i < workerCount; i++) {
             const start = i * batchSize;
-            const end = Math.min(start + batchSize, transactions.length);
-            if (start < transactions.length) {
-                // Use JSON serialization to maintain structure while making it transferable
-                const batchTransactions = JSON.parse(JSON.stringify(transactions.slice(start, end)));
-                
-                const batchAccountIndexes = [];
-                
-                // Only pass serializable data - account indexes
-                for (let j = start; j < end; j++) {
-                    batchAccountIndexes.push(accounts[j % accounts.length].mnemonicIndex);
-                }
-                
+            const end = Math.min(start + batchSize, txAccountMap.length);
+            if (start < txAccountMap.length) {
+                const batch = txAccountMap.slice(start, end);
                 workerBatches.push({
-                    transactions: batchTransactions,
-                    accountIndexes: batchAccountIndexes,
-                    startIndex: start
+                    transactions: batch.map(item => item.tx),
+                    accountIndexes: batch.map(item => accounts[item.accountIndex].mnemonicIndex),
                 });
             }
         }
@@ -249,14 +243,12 @@ class Signer {
                 
                 worker.on('message', (data) => {
                     if (data.type === 'progress') {
-                        // Handle incremental progress updates from worker
                         signBar.increment(data.increment);
                     } else if (data.success) {
-                        // Final result - all transactions signed
                         resolve(data.signedTxs);
                         worker.terminate();
                     } else {
-                        reject(new Error(`Worker ${workerIndex} failed: ${data.error}`));
+                        reject(new Error(`Worker ${workerIndex + 1} failed: ${data.error}`));
                         worker.terminate();
                     }
                 });
@@ -266,11 +258,9 @@ class Signer {
                     worker.terminate();
                 });
 
-                // Send work to worker - only serializable data
                 worker.postMessage({
                     transactions: batch.transactions,
                     accountIndexes: batch.accountIndexes,
-                    startIndex: batch.startIndex,
                     mnemonicSeed: this.mnemonic,
                     hdPath: "m/44'/60'/0'/0"
                 });
@@ -278,34 +268,24 @@ class Signer {
         });
 
         try {
-            // Wait for all workers to complete
-            const results = await Promise.all(workerPromises) as any[][];
-            
-            const allSignedTxsWithIndex = results.flat();
-            
-            // Group transactions by account
-            const txsByAccount = new Map<string, string[]>();
-            for (const item of allSignedTxsWithIndex) {
-                const accountIndex = item.originalIndex % accounts.length;
-                const account = accounts[accountIndex];
-                const address = account.getAddress();
+            const results = await Promise.all(workerPromises) as string[][];
+            const signedTxsFlat = results.flat();
 
-                if (!txsByAccount.has(address)) {
-                    txsByAccount.set(address, []);
+            const signedTxsGrouped: string[][] = Array.from({ length: accounts.length }, () => []);
+            let currentTxIndex = 0;
+            transactions.forEach((txs, accountIndex) => {
+                for (let i = 0; i < txs.length; i++) {
+                    signedTxsGrouped[accountIndex].push(signedTxsFlat[currentTxIndex++]);
                 }
-                // The worker returns items sorted by originalIndex, which preserves nonce order per account
-                txsByAccount.get(address)!.push(item.signedTx);
-            }
-
-            const groupedSignedTxs = Array.from(txsByAccount.values());
+            });
 
             signBar.stop();
             
-            const totalSigned = groupedSignedTxs.reduce((sum, txs) => sum + txs.length, 0);
-            Logger.success(`Successfully signed ${totalSigned}/${transactions.length} transactions using ${workerCount} CPU cores`);
+            const totalSigned = signedTxsFlat.length;
+            Logger.success(`Successfully signed ${totalSigned}/${flatTransactions.length} transactions using ${workerCount} CPU cores`);
             Logger.info('✅ Transactions grouped by account for sequential nonce sending');
             
-            return groupedSignedTxs;
+            return signedTxsGrouped;
             
         } catch (error: any) {
             signBar.stop();

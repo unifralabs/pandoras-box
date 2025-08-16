@@ -1,10 +1,10 @@
 #!/bin/bash
 
 yarn build
-transactions=50000
+transactions=5000
 batch=30
-subaccounts=5000
-concurrency=120
+subaccounts=100
+concurrency=80
 
 RPC="https://rpc.shude.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"

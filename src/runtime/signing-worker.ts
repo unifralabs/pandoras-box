@@ -3,12 +3,11 @@ import { Wallet } from '@ethersproject/wallet';
 import { TransactionRequest } from '@ethersproject/providers';
 
 // Worker thread for CPU-intensive transaction signing
-// 保持简单，直接模仿 signTransactions_old 的实现
 if (parentPort) {
     parentPort.on('message', async (data: any) => {
         try {
-            const { transactions, accountIndexes, mnemonicSeed, hdPath, startIndex } = data;
-            const signedTxs: { originalIndex: number, signedTx: string }[] = [];
+            const { transactions, accountIndexes, mnemonicSeed, hdPath } = data;
+            const signedTxs: string[] = [];
             let lastReported = 0;
             
             for (let i = 0; i < transactions.length; i++) {
@@ -21,10 +20,10 @@ if (parentPort) {
                 // Convert JSON-serialized BigNumber objects back to hex strings
                 const cleanTx = {
                     to: tx.to,
-                    value: tx.value?.hex || tx.value,
+                    value: tx.value?._hex || tx.value,
                     data: tx.data || '0x',
-                    gasLimit: tx.gasLimit?.hex || tx.gasLimit,
-                    gasPrice: tx.gasPrice?.hex || tx.gasPrice,
+                    gasLimit: tx.gasLimit?._hex || tx.gasLimit,
+                    gasPrice: tx.gasPrice?._hex || tx.gasPrice,
                     nonce: tx.nonce,
                     chainId: tx.chainId,
                     from: tx.from
@@ -32,10 +31,7 @@ if (parentPort) {
                 
                 // Sign the transaction - exactly like signTransactions_old does
                 const signedTx = await wallet.signTransaction(cleanTx);
-                signedTxs.push({
-                    originalIndex: startIndex + i,
-                    signedTx: signedTx
-                });
+                signedTxs.push(signedTx);
                 
                 if ((i + 1) % 256 == 0 || i === transactions.length - 1) {
                     const increment = (i + 1) - lastReported;
