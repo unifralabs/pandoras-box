@@ -1,14 +1,15 @@
 #!/bin/bash
-set -e
+
 yarn build
-transactions=5000
-batch=20
-subaccounts=5000
-concurrency=100
+transactions=500
+batch=2
+subaccounts=100
+concurrency=200
 
 RPC="https://rpc.shude.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
+
 out=latest
 mkdir -p ${out}
 
@@ -17,27 +18,33 @@ getPending(){
 }
 
 clearPending(){
-    ./bin/index.js \
-    --mode CLEAR_PENDING \
-    --json-rpc $RPC \
+    getPending
+    sleep 2
+
+./bin/index.js \
+    --json-rpc "$RPC" \
     --mnemonic "$MNEMONIC" \
-    --sub-accounts $subaccounts
+    --mode "CLEAR_PENDING" \
+    --num-accounts "$subaccounts" \
+    --concurrency "$concurrency"
 } 
 
-EOA()
+runEOA()
 {
-    ./bin/index.js -url $RPC -m "$MNEMONIC" \
+    ./bin/index.js -u $RPC -m "$MNEMONIC" \
+    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
     -c $concurrency \
-    --mode EOA \
+    --mode "EOA" \
     -o ./${out}/EOA_${transactions}_${batch}_${subaccounts}.json
 }
 
 ERC20()
 {
-    ./bin/index.js -url $RPC -m "$MNEMONIC" \
+    ./bin/index.js -u $RPC -m "$MNEMONIC" \
+    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -48,7 +55,8 @@ ERC20()
 
 ERC721()
 {
-    ./bin/index.js -url $RPC -m "$MNEMONIC" \
+    ./bin/index.js -u $RPC -m "$MNEMONIC" \
+    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -57,6 +65,18 @@ ERC721()
     -o ./${out}/ERC721_${transactions}_${batch}_${subaccounts}.json
 }
 
+# getPending
+# clearPending
+# exit 0
+
+runEOA
+#getPending
+exit 0
+
+sleep 30
+ERC20
+sleep 30
 getPending
 
-clearPending
+ERC721
+getPending

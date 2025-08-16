@@ -55,8 +55,8 @@ async function run() {
             '1000'
         )
         .option(
-            '--yes',
-            'Automatically say yes to confirmation prompts for CLEAR_PENDING mode',
+            '--fixed-gas-price',
+            'Use a fixed gas price of 1 Gwei for EOA, ERC20, and ERC721 modes.',
             false
         )
         .option(
@@ -90,7 +90,13 @@ async function run() {
     const output = options.output;
     const concurrency = options.concurrency;
     const numAccounts = parseInt(options.numAccounts, 10);
-    const autoConfirm = options.yes;
+    const useFixedGasPrice = options.fixedGasPrice;
+    let fixedGasPrice = null;
+
+    if (useFixedGasPrice) {
+        fixedGasPrice = parseUnits('1', 'gwei');
+        Logger.info(`Using fixed gas price of 1 Gwei for all transactions.`);
+    }
 
 
     // Handle the GET_PENDING_COUNT mode as a standalone utility
@@ -105,7 +111,7 @@ async function run() {
             Logger.error('Error: Mnemonic is required for CLEAR_PENDING mode. Please provide one with -m');
             return;
         }
-        const clearPendingRuntime = new ClearPendingRuntime(url, mnemonic, numAccounts, concurrency, autoConfirm);
+        const clearPendingRuntime = new ClearPendingRuntime(url, mnemonic, numAccounts, concurrency);
         await clearPendingRuntime.run();
         return;
     }
@@ -121,14 +127,14 @@ async function run() {
 
     switch (mode) {
         case RuntimeType.EOA:
-            runtime = new EOARuntime(mnemonic, url);
+            runtime = new EOARuntime(mnemonic, url, fixedGasPrice);
             break;
         case RuntimeType.ERC20:
-            runtime = new ERC20Runtime(mnemonic, url);
+            runtime = new ERC20Runtime(mnemonic, url, fixedGasPrice);
             await (runtime as InitializedRuntime).Initialize();
             break;
         case RuntimeType.ERC721:
-            runtime = new ERC721Runtime(mnemonic, url);
+            runtime = new ERC721Runtime(mnemonic, url, fixedGasPrice);
             await (runtime as InitializedRuntime).Initialize();
             break;
         default:
@@ -159,6 +165,7 @@ async function run() {
         // Start the distribution
         await tokenDistributor.distributeTokens();
     }
+
 
     // Get current block height
     const provider = new JsonRpcProvider(url);

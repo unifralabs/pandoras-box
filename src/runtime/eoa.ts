@@ -19,11 +19,13 @@ class EOARuntime {
     gasPrice: BigNumber = BigNumber.from(0);
 
     defaultValue: BigNumber = BigNumber.from(1);
+    fixedGasPrice: BigNumber | null;
 
-    constructor(mnemonic: string, url: string) {
+    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
+        this.fixedGasPrice = fixedGasPrice;
     }
 
     async EstimateBaseTx(): Promise<BigNumber> {
@@ -43,6 +45,10 @@ class EOARuntime {
     }
 
     async GetGasPrice(): Promise<BigNumber> {
+        if (this.fixedGasPrice) {
+            this.gasPrice = this.fixedGasPrice;
+            return this.gasPrice;
+        }
         const currentGasPrice = await this.provider.getGasPrice();
         this.gasPrice = currentGasPrice.mul(4);
         return this.gasPrice;

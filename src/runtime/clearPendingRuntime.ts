@@ -1,50 +1,48 @@
 
 import { JsonRpcProvider } from '@ethersproject/providers';
 import { Wallet } from '@ethersproject/wallet';
-import * as readline from 'readline';
 import { SingleBar } from 'cli-progress';
-import Table from 'cli-table3';
 import Logger from '../logger/logger';
+import { parseUnits } from '@ethersproject/units';
 
 class ClearPendingRuntime {
     private provider: JsonRpcProvider;
     private mnemonic: string;
     private numAccounts: number;
     private concurrency: number;
-    private autoConfirm: boolean;
 
     constructor(
         url: string,
         mnemonic: string,
         numAccounts: number,
-        concurrency: number,
-        autoConfirm: boolean
+        concurrency: number
     ) {
         this.provider = new JsonRpcProvider(url);
         this.mnemonic = mnemonic;
         this.numAccounts = numAccounts;
         this.concurrency = concurrency || 50;
-        this.autoConfirm = autoConfirm;
     }
 
     public async run() {
-        Logger.info(`Checking ${this.numAccounts} accounts for pending transactions with a concurrency of ${this.concurrency}...`);
-        const accountsToClear: { wallet: Wallet; nonce: number; address: string; accountIndex: number }[] = [];
-
-        const checkBar = new SingleBar({
-            format: 'Checking Accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total}',
+        Logger.info(`Scanning and clearing pending transactions for ${this.numAccounts} accounts with a concurrency of ${this.concurrency}...`);
+        
+        let clearedCount = 0;
+        const processBar = new SingleBar({
+            format: 'Processing Accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} | Cleared: {cleared}',
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
-            hideCursor: true,
+            hideCursor: false,
         });
-        checkBar.start(this.numAccounts, 0);
+        processBar.start(this.numAccounts, 0, { cleared: 0 });
+
+        const feeData = await this.provider.getFeeData();
 
         for (let i = 0; i < this.numAccounts; i += this.concurrency) {
-            const batchPromises: Promise<any>[] = [];
+            const batchPromises: Promise<void>[] = [];
             const batchEnd = Math.min(i + this.concurrency, this.numAccounts);
             
             for (let j = i; j < batchEnd; j++) {
-                const checkPromise = (async (accountIndex) => {
+                const processPromise = (async (accountIndex) => {
                     const wallet = Wallet.fromMnemonic(
                         this.mnemonic,
                         `m/44'/60'/0'/0/${accountIndex}`
@@ -55,127 +53,49 @@ class ClearPendingRuntime {
                         const latestNonce = await wallet.getTransactionCount('latest');
 
                         if (pendingNonce > latestNonce) {
-                            return {
-                                wallet,
-                                nonce: latestNonce,
-                                address: wallet.address,
-                                accountIndex: accountIndex,
-                            };
+                            const numToClear = pendingNonce - latestNonce;
+                            Logger.debug(`\n[Account ${accountIndex}] Pending transactions detected. Nonce -> Pending: ${pendingNonce}, On-chain: ${latestNonce}. Attempting to clear ${numToClear} transaction(s) sequentially...`);
+                            
+                            const fixedGasPrice = parseUnits('100', 'gwei');
+                            let successfullyCleared = 0;
+
+                            for (let nonceToClear = latestNonce; nonceToClear < pendingNonce; nonceToClear++) {
+                                try {
+                                    let tx: any;
+                                    if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+                                        tx = { to: wallet.address, value: 0, nonce: nonceToClear, gasLimit: 21000, maxFeePerGas: fixedGasPrice, maxPriorityFeePerGas: fixedGasPrice };
+                                    } else {
+                                        tx = { to: wallet.address, value: 0, nonce: nonceToClear, gasPrice: fixedGasPrice, gasLimit: 21000 };
+                                    }
+
+                                    const txResponse = await wallet.sendTransaction(tx);
+                                    Logger.debug(`  -> Sent clearing transaction for nonce ${nonceToClear}. Hash: ${txResponse.hash}`);
+                                    successfullyCleared++;
+                                } catch (error: any) {
+                                    Logger.debug(`\n  -> Failed to send clearing transaction for nonce ${nonceToClear} on account ${accountIndex}: ${error.message}`);
+                                    Logger.debug(`  -> Aborting further clearing for account ${accountIndex}.`);
+                                    break; 
+                                }
+                            }
+                            
+                            if (successfullyCleared > 0) {
+                                clearedCount += successfullyCleared;
+                                Logger.debug(`\nSuccessfully sent ${successfullyCleared} of ${numToClear} clearing transaction(s) for account ${accountIndex}.`);
+                            }
                         }
                     } catch (error: any) {
-                        Logger.error(`\nError checking account ${accountIndex}: ${error.message}`);
+                        Logger.debug(`\nFailed to process account ${accountIndex}: ${error.message}`);
                     } finally {
-                        checkBar.increment();
+                        processBar.increment(1, { cleared: clearedCount });
                     }
-                    return null;
                 })(j);
-                batchPromises.push(checkPromise);
-            }
-
-            const batchResults = await Promise.all(batchPromises);
-            
-            for (const result of batchResults) {
-                if (result) {
-                    accountsToClear.push(result);
-                }
-            }
-        }
-        checkBar.stop();
-
-        if (accountsToClear.length === 0) {
-            Logger.success('\n✅ No accounts with pending transactions found.');
-            return;
-        }
-
-        Logger.info(`\nFound ${accountsToClear.length} accounts with pending transactions:`);
-
-        const table = new Table({
-            head: ['Index', 'Address', 'Nonce to Clear'],
-            colWidths: [10, 70, 20],
-        });
-
-        for (const acc of accountsToClear) {
-            table.push([acc.accountIndex, acc.address, acc.nonce]);
-        }
-        console.log(table.toString());
-
-        if (!this.autoConfirm) {
-            const rl = readline.createInterface({
-                input: process.stdin,
-                output: process.stdout
-            });
-
-            const answer = await new Promise<string>(resolve => {
-                rl.question('\nDo you want to proceed with sending clearing transactions for all accounts listed above? (y/n): ', resolve);
-            });
-            rl.close();
-
-            if (answer.toLowerCase() !== 'y') {
-                Logger.warn('Transaction cancelled by user.');
-                return;
-            }
-        }
-
-        Logger.info('\nSending clearing transactions...');
-        const sendBar = new SingleBar({
-            format: 'Sending Txs [{bar}] {percentage}% | ETA: {eta}s | {value}/{total}',
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
-            hideCursor: true,
-        });
-        sendBar.start(accountsToClear.length, 0);
-
-        const feeData = await this.provider.getFeeData();
-        const gasPrice = (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) ? null : await this.provider.getGasPrice();
-
-        for (let i = 0; i < accountsToClear.length; i += this.concurrency) {
-            const batchPromises: Promise<void>[] = [];
-            const batchEnd = Math.min(i + this.concurrency, accountsToClear.length);
-            
-            for (let j = i; j < batchEnd; j++) {
-                const account = accountsToClear[j];
-                const sendPromise = (async () => {
-                    try {
-                        let tx: any;
-                        if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-                            const boostedMaxPriorityFeePerGas = feeData.maxFeePerGas.mul(120).div(100);
-                            const boostedMaxFeePerGas = feeData.maxFeePerGas.mul(120).div(100);
-                            tx = {
-                                to: account.address,
-                                value: 0,
-                                nonce: account.nonce,
-                                gasLimit: 21000,
-                                maxFeePerGas: boostedMaxFeePerGas,
-                                maxPriorityFeePerGas: boostedMaxPriorityFeePerGas,
-                            };
-                        } else if (gasPrice) {
-                            const boostedGasPrice = gasPrice.mul(2);
-                            tx = {
-                                to: account.address,
-                                value: 0,
-                                nonce: account.nonce,
-                                gasPrice: boostedGasPrice,
-                                gasLimit: 21000,
-                            };
-                        } else {
-                            throw new Error('Could not determine gas fees for transaction.');
-                        }
-
-                        const txResponse = await account.wallet.sendTransaction(tx);
-                        await txResponse.wait(1);
-                    } catch (error: any) {
-                        Logger.error(`\nFailed to clear transaction for account ${account.accountIndex} (${account.address}): ${error.message}`);
-                    } finally {
-                        sendBar.increment();
-                    }
-                })();
-                batchPromises.push(sendPromise);
+                batchPromises.push(processPromise);
             }
             await Promise.all(batchPromises);
         }
-        sendBar.stop();
+        processBar.stop();
 
-        Logger.success('\n✅ All clearing transactions have been processed.');
+        Logger.success(`\n✅ Finished processing. Cleared a total of ${clearedCount} pending transactions.`);
     }
 }
 

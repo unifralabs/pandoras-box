@@ -28,12 +28,15 @@ class ERC721Runtime {
 
     contract: Contract | undefined;
 
+    fixedGasPrice: BigNumber | null;
+
     baseDeployer: Wallet;
 
-    constructor(mnemonic: string, url: string) {
+    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
+        this.fixedGasPrice = fixedGasPrice;
 
         this.baseDeployer = Wallet.fromMnemonic(
             this.mnemonic,
@@ -84,6 +87,10 @@ class ERC721Runtime {
     }
 
     async GetGasPrice(): Promise<BigNumber> {
+        if (this.fixedGasPrice) {
+            this.gasPrice = this.fixedGasPrice;
+            return this.gasPrice;
+        }
         const currentGasPrice = await this.provider.getGasPrice();
         this.gasPrice = currentGasPrice.mul(4);
         return this.gasPrice;

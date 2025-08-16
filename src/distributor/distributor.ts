@@ -340,9 +340,6 @@ class Distributor {
             );
         };
 
-        // Clear the list of ready indexes
-        this.readyMnemonicIndexes = [];
-
         const fundBar = new SingleBar({
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
