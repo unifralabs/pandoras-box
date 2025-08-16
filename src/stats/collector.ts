@@ -563,10 +563,6 @@ class StatCollector {
             totalTxs++;
         }
 
-        if (excludedTxs > 0) {
-            Logger.info(`Excluding ${excludedTxs} transactions from first block (block #${firstBlock}) for Overall TPS calculation`);
-        }
-
         // Calculate total time span from first block to last block
         if (uniqueBlocks.size > 0) {
             try {
