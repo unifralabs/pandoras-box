@@ -7,6 +7,7 @@ export enum RuntimeType {
     ERC20 = 'ERC20',
     ERC721 = 'ERC721',
     GREETER = 'GREETER',
+    CLEAR_PENDING = 'CLEAR_PENDING',
 }
 
 export interface Runtime {
