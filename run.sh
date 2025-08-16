@@ -1,9 +1,9 @@
 #!/bin/bash
 
 yarn build
-transactions=50000
+transactions=1000
 batch=30
-subaccounts=5000
+subaccounts=100
 concurrency=100
 
 RPC="https://rpc.shude.unifra.xyz"
@@ -39,9 +39,11 @@ runEOA()
     -c $concurrency \
     --mode "EOA" \
     -o ./${out}/EOA_${transactions}_${batch}_${subaccounts}.json
+    getPending
+    exit 0
 }
 
-ERC20()
+runERC20()
 {
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
     --fixed-gas-price \
@@ -51,9 +53,11 @@ ERC20()
     -c $concurrency \
     --mode ERC20 \
     -o ./${out}/ERC20_${transactions}_${batch}_${subaccounts}.json
+    getPending
+    exit 0
 }
 
-ERC721()
+runERC721()
 {
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
     --fixed-gas-price \
@@ -63,20 +67,21 @@ ERC721()
     -c $concurrency \
     --mode ERC721 \
     -o ./${out}/ERC721_${transactions}_${batch}_${subaccounts}.json
+    getPending
+    exit 0
 }
+
+
 
 # getPending
 # clearPending
 # exit 0
 
-runEOA
-#getPending
-exit 0
+#runEOA
+# #getPending
+# exit 0
 
-sleep 30
-ERC20
-sleep 30
-getPending
+# sleep 30
+runERC20
 
-ERC721
-getPending
+# runERC721

@@ -55,9 +55,15 @@ class ERC721Runtime {
             this.baseDeployer
         );
 
+        const deployOptions: any = {};
+        if (this.fixedGasPrice) {
+            deployOptions.gasPrice = this.fixedGasPrice;
+        }
+
         const contract = await contractFactory.deploy(
             this.nftName,
-            this.nftSymbol
+            this.nftSymbol,
+            deployOptions
         );
 
         await contract.deployTransaction.wait();

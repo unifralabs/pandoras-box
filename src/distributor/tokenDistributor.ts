@@ -160,7 +160,7 @@ class TokenDistributor {
                     // on the list to get topped off
                     shortAddresses.push(
                         new distributeAccount(
-                            parseEther('0.001'),
+                            BigNumber.from(singleRunCost),
                             result.address,
                             result.index
                         )

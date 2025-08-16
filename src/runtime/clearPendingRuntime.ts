@@ -10,21 +10,28 @@ class ClearPendingRuntime {
     private mnemonic: string;
     private numAccounts: number;
     private concurrency: number;
+    private startIndex: number;
+    private endIndex: number;
 
     constructor(
         url: string,
         mnemonic: string,
         numAccounts: number,
-        concurrency: number
+        concurrency: number,
+        startIndex: number = 0,
+        endIndex?: number
     ) {
         this.provider = new JsonRpcProvider(url);
         this.mnemonic = mnemonic;
         this.numAccounts = numAccounts;
         this.concurrency = concurrency || 50;
+        this.startIndex = startIndex;
+        this.endIndex = endIndex !== undefined ? endIndex : numAccounts;
     }
 
     public async run() {
-        Logger.info(`Scanning and clearing pending transactions for ${this.numAccounts} accounts with a concurrency of ${this.concurrency}...`);
+        const totalAccountsToScan = this.endIndex - this.startIndex;
+        Logger.info(`Scanning and clearing pending transactions for accounts from index ${this.startIndex} to ${this.endIndex} with a concurrency of ${this.concurrency}...`);
         
         let clearedCount = 0;
         const processBar = new SingleBar({
@@ -33,13 +40,13 @@ class ClearPendingRuntime {
             barIncompleteChar: '\u2591',
             hideCursor: false,
         });
-        processBar.start(this.numAccounts, 0, { cleared: 0 });
+        processBar.start(totalAccountsToScan, 0, { cleared: 0 });
 
         const feeData = await this.provider.getFeeData();
 
-        for (let i = 0; i < this.numAccounts; i += this.concurrency) {
+        for (let i = this.startIndex; i < this.endIndex; i += this.concurrency) {
             const batchPromises: Promise<void>[] = [];
-            const batchEnd = Math.min(i + this.concurrency, this.numAccounts);
+            const batchEnd = Math.min(i + this.concurrency, this.endIndex);
             
             for (let j = i; j < batchEnd; j++) {
                 const processPromise = (async (accountIndex) => {

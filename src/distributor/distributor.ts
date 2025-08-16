@@ -1,6 +1,6 @@
 import { BigNumber } from '@ethersproject/bignumber';
 import { JsonRpcProvider, Provider } from '@ethersproject/providers';
-import { formatEther } from '@ethersproject/units';
+import { formatEther, parseEther } from '@ethersproject/units';
 import { Wallet } from '@ethersproject/wallet';
 import { SingleBar } from 'cli-progress';
 import Table from 'cli-table3';
@@ -89,12 +89,10 @@ class Distributor {
     async distribute(): Promise<number[]> {
         Logger.title('💸 Fund distribution initialized 💸');
 
-        const baseCosts = await this.calculateRuntimeCosts();
-        this.printCostTable(baseCosts);
-
+        const threshold = parseEther('0.1');
         // Check if there are any addresses that need funding
         const shortAddresses = await this.findAccountsForDistribution(
-            baseCosts.subAccount
+            threshold
         );
 
         const initialAccCount = shortAddresses.size();
@@ -117,7 +115,7 @@ class Distributor {
 
         // Get a list of accounts that can be funded
         const fundableAccounts = await this.getFundableAccounts(
-            baseCosts,
+            threshold,
             shortAddresses
         );
 
@@ -128,7 +126,7 @@ class Distributor {
         }
 
         // Fund the accounts
-        await this.fundAccounts(baseCosts, fundableAccounts);
+        await this.fundAccounts(threshold, fundableAccounts);
 
         Logger.success('Fund distribution finished!');
 
@@ -245,7 +243,7 @@ class Distributor {
                     // on the list to get topped off
                     shortAddresses.push(
                         new distributeAccount(
-                            singleRunCost.sub(result.balance),
+                            BigNumber.from(singleRunCost),
                             result.address,
                             result.index
                         )
@@ -281,7 +279,7 @@ class Distributor {
     }
 
     async getFundableAccounts(
-        costs: runtimeCosts,
+        costs: BigNumber,
         initialSet: Heap<distributeAccount>
     ): Promise<distributeAccount[]> {
         // Check if the root wallet has enough funds to distribute
@@ -295,7 +293,7 @@ class Distributor {
         );
 
         while (
-            distributorBalance.gt(costs.accDistributionCost) &&
+            distributorBalance.gt(costs) &&
             initialSet.size() > 0
         ) {
             const acc = initialSet.pop() as distributeAccount;
@@ -312,7 +310,7 @@ class Distributor {
         return accountsToFund;
     }
 
-    async fundAccounts(costs: runtimeCosts, accounts: distributeAccount[]) {
+    async fundAccounts(costs: BigNumber, accounts: distributeAccount[]) {
         Logger.info('\nFunding accounts (parallel with nonce management)...');
 
         // Internal helper functions for nonce management

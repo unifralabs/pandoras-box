@@ -51,6 +51,10 @@ class Engine {
             ctx.numTxs
         );
 
+        // Pre-calculate the base gas estimation and gas price for the run
+        await runtime.EstimateBaseTx();
+        await runtime.GetGasPrice();
+
         // Construct the transactions
         const rawTransactions: TransactionRequest[][] =
             await runtime.ConstructTransactions(accounts, ctx.numTxs);

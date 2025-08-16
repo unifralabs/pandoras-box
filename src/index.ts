@@ -55,6 +55,15 @@ async function run() {
             '1000'
         )
         .option(
+            '--start-index <number>',
+            'The starting account index for CLEAR_PENDING mode',
+            '0'
+        )
+        .option(
+            '--end-index <number>',
+            'The ending account index for CLEAR_PENDING mode (exclusive)'
+        )
+        .option(
             '--fixed-gas-price',
             'Use a fixed gas price of 1 Gwei for EOA, ERC20, and ERC721 modes.',
             false
@@ -91,6 +100,8 @@ async function run() {
     const concurrency = options.concurrency;
     const numAccounts = parseInt(options.numAccounts, 10);
     const useFixedGasPrice = options.fixedGasPrice;
+    const startIndex = parseInt(options.startIndex, 10);
+    const endIndex = options.endIndex ? parseInt(options.endIndex, 10) : undefined;
     let fixedGasPrice = null;
 
     if (useFixedGasPrice) {
@@ -111,7 +122,7 @@ async function run() {
             Logger.error('Error: Mnemonic is required for CLEAR_PENDING mode. Please provide one with -m');
             return;
         }
-        const clearPendingRuntime = new ClearPendingRuntime(url, mnemonic, numAccounts, concurrency);
+        const clearPendingRuntime = new ClearPendingRuntime(url, mnemonic, numAccounts, concurrency, startIndex, endIndex);
         await clearPendingRuntime.run();
         return;
     }
@@ -131,11 +142,15 @@ async function run() {
             break;
         case RuntimeType.ERC20:
             runtime = new ERC20Runtime(mnemonic, url, fixedGasPrice);
+            Logger.info('\nDeploying ERC20 contract, this may take a moment...');
             await (runtime as InitializedRuntime).Initialize();
+            Logger.success('ERC20 contract deployed successfully.');
             break;
         case RuntimeType.ERC721:
             runtime = new ERC721Runtime(mnemonic, url, fixedGasPrice);
+            Logger.info('\nDeploying ERC721 contract, this may take a moment...');
             await (runtime as InitializedRuntime).Initialize();
+            Logger.success('ERC721 contract deployed successfully.');
             break;
         default:
             throw RuntimeErrors.errUnknownRuntime;
