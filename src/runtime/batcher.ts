@@ -20,18 +20,16 @@ class Batcher {
     }
 
     static async batchTransactions(
-        signedTxs: string[],
+        signedTxsByAccount: string[][],
         batchSize: number,
         url: string,
         _concurrency?: number
     ): Promise<string[]> {
-        // Generate the transaction hash batches
-        const batches: string[][] = Batcher.generateBatches<string>(
-            signedTxs,
-            batchSize
-        );
+        const senderQueues = signedTxsByAccount;
 
-        Logger.info(`Sending transactions in ${batches.length} batches...`);
+        Logger.info(
+            `Sending transactions for ${senderQueues.length} accounts...`
+        );
 
         const batchBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -40,7 +38,14 @@ class Batcher {
             format: 'progress [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} batches',
         });
 
-        batchBar.start(batches.length, 0, {
+        let totalTransactions = 0;
+        let totalBatches = 0;
+        for (const queue of senderQueues) {
+            totalTransactions += queue.length;
+        }
+        totalBatches = Math.ceil(totalTransactions / batchSize);
+
+        batchBar.start(totalBatches, 0, {
             speed: 'N/A',
         });
 
@@ -48,130 +53,127 @@ class Batcher {
         const batchErrors: string[] = [];
 
         try {
-            let nextIndx = 0;
-            const payloads: string[] = [];
-            for (const item of batches) {
-                let singleRequests = '';
-                for (let i = 0; i < item.length; i++) {
-                    singleRequests += JSON.stringify({
-                        jsonrpc: '2.0',
-                        method: 'eth_sendRawTransaction',
-                        params: [item[i]],
-                        id: nextIndx++,
-                    });
+            const concurrency = _concurrency || senderQueues.length;
+            const effectiveConcurrency = Math.min(
+                concurrency,
+                senderQueues.length
+            );
 
-                    if (i != item.length - 1) {
-                        singleRequests += ',\n';
-                    }
-                }
-                payloads.push('[' + singleRequests + ']');
+            // 1. Prepare batches for all workers before starting them.
+            //    `allBatches` is an array where each element is the list of batches for a single worker.
+            const allBatches: string[][][] = [];
+            for (let i = 0; i < effectiveConcurrency; i++) {
+                allBatches.push([]); // Initialize a batch list for each worker
             }
 
-            let responses: any[];
+            // 2. Populate the batches using the efficient packing strategy.
+            for (let accountIdx = 0; accountIdx < senderQueues.length; accountIdx++) {
+                const queue = senderQueues[accountIdx];
+                const chargeWorker = accountIdx % effectiveConcurrency;
+                const workerBatchList = allBatches[chargeWorker];
 
-            if (!_concurrency || _concurrency <= 0 || _concurrency >= payloads.length) {
-                const rawResponses = await Promise.all(
-                    payloads.map((data) => {
-                        batchBar.increment();
-                        return axios({
+                for (const tx of queue) {
+                    const lastBatch = workerBatchList.at(-1);
+
+                    if (lastBatch && lastBatch.length < batchSize) {
+                        // If the last batch for this worker exists and is not full, add to it.
+                        lastBatch.push(tx);
+                    } else {
+                        // Otherwise, create a new batch for this worker.
+                        workerBatchList.push([tx]);
+                    }
+                }
+            }
+            
+            // 3. Update the progress bar with the accurately calculated total number of batches.
+            const totalBatches = allBatches.reduce((sum, workerBatches) => sum + workerBatches.length, 0);
+            batchBar.start(totalBatches, 0, {
+                speed: 'N/A',
+            });
+
+
+            // 4. Define the worker function.
+            const workers: Promise<void>[] = [];
+            const worker = async (workerId: number) => {
+                const batchesForThisWorker = allBatches[workerId];
+                let nextId = 0; // Each worker can have its own ID sequence
+
+                for (const batch of batchesForThisWorker) {
+                    const payloadItems = batch.map((signedTx) => {
+                        const id = nextId++;
+                        return JSON.stringify({
+                            jsonrpc: '2.0',
+                            method: 'eth_sendRawTransaction',
+                            params: [signedTx],
+                            id,
+                        });
+                    });
+                    const payload = `[${payloadItems.join(',')}]`;
+
+                    try {
+                        const resp = await axios({
                             url: url,
                             method: 'POST',
                             headers: {
                                 'Content-Type': 'application/json',
                             },
-                            data: data,
+                            data: payload,
                         });
-                    })
-                );
-                responses = rawResponses;
-            } else {
-                responses = new Array(payloads.length);
-                let cursor = 0;
-                const workers: Promise<void>[] = [];
-                const spawn = Math.max(1, Math.min(_concurrency, payloads.length));
-
-                const worker = async () => {
-                    for (;;) {
-                        let idx = -1;
-                        if (cursor < payloads.length) {
-                            idx = cursor;
-                            cursor++;
-                        } else {
-                            break;
-                        }
-
-                        const data = payloads[idx];
                         batchBar.increment();
-                        try {
-                            const resp = await axios({
-                                url: url,
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                },
-                                data: data,
-                            });
-                            responses[idx] = resp;
-                        } catch (err) {
-                            responses[idx] = err;
-                        }
-                    }
-                };
 
-                for (let i = 0; i < spawn; i++) {
-                    workers.push(worker());
+                        if (!resp || !resp.data) {
+                            batchErrors.push(
+                                `Batch for worker #${workerId}: Invalid response or missing data.`
+                            );
+                            continue;
+                        }
+
+                        for (const cnt of resp.data) {
+                            // eslint-disable-next-line no-prototype-builtins
+                            if (cnt.hasOwnProperty('error')) {
+                                batchErrors.push(
+                                    `Tx Error (worker #${workerId}, id: ${cnt.id}): ${cnt.error.message}`
+                                );
+                            } else {
+                                txHashes.push(cnt.result);
+                            }
+                        }
+                    } catch (err: any) {
+                        batchBar.increment();
+                        let errorDetails = `Batch for worker #${workerId}: `;
+                        if (err.response) {
+                            errorDetails += `HTTP ${
+                                err.response.status
+                            } - ${
+                                err.response.statusText
+                            } - ${JSON.stringify(err.response.data)}`;
+                        } else if (err.request) {
+                            errorDetails +=
+                                'Network error - no response received';
+                        } else {
+                            errorDetails += `Request error: ${err.message}`;
+                        }
+                        batchErrors.push(errorDetails);
+                        // We don't break here, as one failed batch for a worker doesn't affect other batches for the same worker
+                        // because they contain txs from different accounts.
+                    }
                 }
-                await Promise.all(workers);
+            };
+
+            // 5. Start the workers.
+            for (let i = 0; i < effectiveConcurrency; i++) {
+                workers.push(worker(i));
             }
-
-            for (let i = 0; i < responses.length; i++) {
-                const resp = responses[i];
-                if (!resp || !resp.data) {
-                    // Provide more detailed error information
-                    let errorDetails = `Batch ${i + 1}: `;
-                    if (!resp) {
-                        errorDetails += 'No response received';
-                    } else if (resp.response) {
-                        // This is an axios error with response
-                        errorDetails += `HTTP ${resp.response.status} - ${resp.response.statusText}`;
-                        if (resp.response.data) {
-                            errorDetails += ` - ${JSON.stringify(resp.response.data)}`;
-                        }
-                    } else if (resp.request) {
-                        // Network error
-                        errorDetails += 'Network error - no response received';
-                    } else if (resp.message) {
-                        // Other axios error
-                        errorDetails += `Request error: ${resp.message}`;
-                    } else {
-                        // Response exists but no data field
-                        errorDetails += `Invalid response structure - missing data field. Status: ${resp.status || 'unknown'}`;
-                        if (resp.statusText) {
-                            errorDetails += `, StatusText: ${resp.statusText}`;
-                        }
-                    }
-                    batchErrors.push(errorDetails);
-                    continue;
-                }
-                const content = resp.data;
-
-                for (const cnt of content) {
-                    // eslint-disable-next-line no-prototype-builtins
-                    if (cnt.hasOwnProperty('error')) {
-                        batchErrors.push(cnt.error.message);
-                        continue;
-                    }
-
-                    txHashes.push(cnt.result);
-                }
-            }
+            await Promise.all(workers);
         } catch (e: any) {
             Logger.error(e.message);
         }
 
         batchBar.stop();
 
-        Logger.info(`Sent ${txHashes.length} transactions, writing errors to logfile`);
+        Logger.info(
+            `Sent ${txHashes.length} transactions, writing errors to logfile`
+        );
         if (batchErrors.length > 0) {
             Logger.error('Errors encountered during batch sending:');
 
@@ -181,7 +183,7 @@ class Batcher {
         }
 
         Logger.success(
-            `${batches.length} ${batches.length > 1 ? 'batches' : 'batch'} sent`
+            `${txHashes.length} transactions sent for ${senderQueues.length} accounts`
         );
 
         return txHashes;

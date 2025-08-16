@@ -52,7 +52,7 @@ class Engine {
         );
 
         // Construct the transactions
-        const rawTransactions: TransactionRequest[] =
+        const rawTransactions: TransactionRequest[][] =
             await runtime.ConstructTransactions(accounts, ctx.numTxs);
 
         // Sign the transactions (using multi-threaded version for better CPU utilization)

@@ -193,9 +193,9 @@ class Signer {
      */
     async signTransactionsMultiThreaded(
         accounts: senderAccount[],
-        transactions: TransactionRequest[],
+        transactions: TransactionRequest[][],
         numWorkers?: number
-    ): Promise<string[]> {
+    ): Promise<string[][]> {
         const cpuCores = os.cpus().length;
         const workerCount = numWorkers || Math.max(1, Math.min(cpuCores, transactions.length));
         
@@ -236,7 +236,7 @@ class Signer {
                 workerBatches.push({
                     transactions: batchTransactions,
                     accountIndexes: batchAccountIndexes,
-                    startIndex: start  // 传递起始索引以保持顺序
+                    startIndex: start
                 });
             }
         }
@@ -281,19 +281,31 @@ class Signer {
             // Wait for all workers to complete
             const results = await Promise.all(workerPromises) as any[][];
             
-            // Flatten and sort results by original index to maintain transaction order
             const allSignedTxsWithIndex = results.flat();
-            allSignedTxsWithIndex.sort((a: any, b: any) => a.originalIndex - b.originalIndex);
             
-            // Extract only the signed transaction strings in correct order
-            const allSignedTxs = allSignedTxsWithIndex.map((item: any) => item.signedTx);
-            
+            // Group transactions by account
+            const txsByAccount = new Map<string, string[]>();
+            for (const item of allSignedTxsWithIndex) {
+                const accountIndex = item.originalIndex % accounts.length;
+                const account = accounts[accountIndex];
+                const address = account.getAddress();
+
+                if (!txsByAccount.has(address)) {
+                    txsByAccount.set(address, []);
+                }
+                // The worker returns items sorted by originalIndex, which preserves nonce order per account
+                txsByAccount.get(address)!.push(item.signedTx);
+            }
+
+            const groupedSignedTxs = Array.from(txsByAccount.values());
+
             signBar.stop();
             
-            Logger.success(`Successfully signed ${allSignedTxs.length}/${transactions.length} transactions using ${workerCount} CPU cores`);
-            Logger.info('✅ Transaction order preserved - nonces will be sent in correct sequence');
+            const totalSigned = groupedSignedTxs.reduce((sum, txs) => sum + txs.length, 0);
+            Logger.success(`Successfully signed ${totalSigned}/${transactions.length} transactions using ${workerCount} CPU cores`);
+            Logger.info('✅ Transactions grouped by account for sequential nonce sending');
             
-            return allSignedTxs;
+            return groupedSignedTxs;
             
         } catch (error: any) {
             signBar.stop();

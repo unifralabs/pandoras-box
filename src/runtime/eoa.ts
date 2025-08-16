@@ -57,7 +57,7 @@ class EOARuntime {
     async ConstructTransactions(
         accounts: senderAccount[],
         numTx: number
-    ): Promise<TransactionRequest[]> {
+    ): Promise<TransactionRequest[][]> {
         // Validate accounts array
         if (!accounts || accounts.length === 0) {
             throw new Error('No accounts available for transaction construction. Please check fund distribution.');
@@ -98,12 +98,11 @@ class EOARuntime {
             speed: 'N/A',
         });
 
-        const transactions: TransactionRequest[] = [];
+        const transactions: TransactionRequest[][] = Array.from({ length: validAccounts.length }, () => []);
 
         for (let i = 0; i < numTx; i++) {
             const senderIndex = i % validAccounts.length;
             const receiverIndex = (i + 1) % validAccounts.length;
-
             const sender = validAccounts[senderIndex];
             const receiver = validAccounts[receiverIndex];
 
@@ -113,7 +112,7 @@ class EOARuntime {
                 throw new Error(`Invalid accounts at transaction index ${i}`);
             }
 
-            transactions.push({
+            transactions[senderIndex].push({
                 from: sender.getAddress(),
                 chainId: chainID,
                 to: receiver.getAddress(),

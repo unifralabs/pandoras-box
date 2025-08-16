@@ -25,7 +25,7 @@ export interface Runtime {
     ConstructTransactions(
         accounts: senderAccount[],
         numTxs: number
-    ): Promise<TransactionRequest[]>;
+    ): Promise<TransactionRequest[][]>;
 
     // Returns the start message for the user output
     GetStartMessage(): string;

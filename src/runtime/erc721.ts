@@ -96,13 +96,31 @@ class ERC721Runtime {
         return this.gasPrice;
     }
 
-    async ConstructTransactions_old(
+
+    async ConstructTransactions(
         accounts: senderAccount[],
         numTx: number
-    ): Promise<TransactionRequest[]> {
+    ): Promise<TransactionRequest[][]> {
         if (!this.contract) {
             throw RuntimeErrors.errRuntimeNotInitialized;
         }
+
+        // Validate accounts array
+        if (!accounts || accounts.length === 0) {
+            throw new Error('No accounts available for transaction construction. Please check fund distribution.');
+        }
+
+        // Check for undefined accounts
+        const validAccounts = accounts.filter(acc => acc !== undefined && acc !== null);
+        if (validAccounts.length !== accounts.length) {
+            Logger.warn(`Found ${accounts.length - validAccounts.length} invalid accounts. Using ${validAccounts.length} valid accounts.`);
+        }
+
+        if (validAccounts.length === 0) {
+            throw new Error('All accounts are invalid. Cannot construct transactions.');
+        }
+
+        Logger.info(`Using ${validAccounts.length} funded accounts for ${numTx} transactions`);
 
         const chainID = await this.baseDeployer.getChainId();
         const gasPrice = this.gasPrice;
@@ -122,24 +140,19 @@ class ERC721Runtime {
             speed: 'N/A',
         });
 
-        const transactions: TransactionRequest[] = [];
+        const transactions: TransactionRequest[][] = Array.from({ length: validAccounts.length }, () => []);
 
         for (let i = 0; i < numTx; i++) {
-            const senderIndex = i % accounts.length;
-            const sender = accounts[senderIndex];
+            const senderIndex = i % validAccounts.length;
+            const sender = validAccounts[senderIndex];
 
-            const wallet = Wallet.fromMnemonic(
-                this.mnemonic,
-                `m/44'/60'/0'/0/${senderIndex}`
-            ).connect(this.provider);
+            // Additional safety check
+            if (!sender) {
+                Logger.error(`Invalid account at transaction ${i}: sender=${!!sender}`);
+                throw new Error(`Invalid accounts at transaction index ${i}`);
+            }
 
-            const contract = new Contract(
-                this.contract.address,
-                ZexNFTs.abi,
-                wallet
-            );
-
-            const transaction = await contract.populateTransaction.createNFT(
+            const transaction = await this.contract.populateTransaction.createNFT(
                 this.nftURL
             );
 
@@ -150,7 +163,7 @@ class ERC721Runtime {
             transaction.gasLimit = this.gasEstimation;
             transaction.nonce = sender.getNonce();
 
-            transactions.push(transaction);
+            transactions[senderIndex].push(transaction);
 
             sender.incrNonce();
             constructBar.increment();
@@ -158,131 +171,6 @@ class ERC721Runtime {
 
         constructBar.stop();
         Logger.success(`Successfully constructed ${numTx} transactions`);
-
-        return transactions;
-    }
-
-    async ConstructTransactions(
-        accounts: senderAccount[],
-        numTx: number
-    ): Promise<TransactionRequest[]> {
-        if (!this.contract) {
-            throw RuntimeErrors.errRuntimeNotInitialized;
-        }
-
-        const chainID = await this.baseDeployer.getChainId();
-        const gasPrice = this.gasPrice;
-
-        Logger.info(`Chain ID: ${chainID}`);
-        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
-
-        const constructBar = new SingleBar({
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
-            hideCursor: true,
-            format: 'Constructing ERC721 transactions [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
-        });
-
-        Logger.info(`\nConstructing ${this.nftName} mint transactions (parallel)...`);
-        constructBar.start(numTx, 0, {
-            speed: 'N/A',
-        });
-
-        // Pre-create wallets and contracts to avoid repeated creation
-        const walletCache = new Map<number, { wallet: Wallet; contract: Contract }>();
-        
-        const createWalletAndContract = (senderIndex: number) => {
-            if (!walletCache.has(senderIndex)) {
-                const wallet = Wallet.fromMnemonic(
-                    this.mnemonic,
-                    `m/44'/60'/0'/0/${senderIndex}`
-                ).connect(this.provider);
-
-                const contract = new Contract(
-                    this.contract!.address,
-                    ZexNFTs.abi,
-                    wallet
-                );
-
-                walletCache.set(senderIndex, { wallet, contract });
-            }
-            return walletCache.get(senderIndex)!;
-        };
-
-        const batchSize = 50; // Process in parallel batches
-        const transactions: TransactionRequest[] = [];
-
-        // Process transactions in parallel batches
-        for (let i = 0; i < numTx; i += batchSize) {
-            const batchEnd = Math.min(i + batchSize, numTx);
-            const batchPromises = [];
-
-            for (let j = i; j < batchEnd; j++) {
-                const senderIndex = j % accounts.length;
-                const sender = accounts[senderIndex];
-
-                // Create promise for parallel processing
-                const txPromise = (async () => {
-                    try {
-                        const { contract } = createWalletAndContract(senderIndex);
-
-                        // This is the main bottleneck - RPC call for NFT minting
-                        const transaction = await contract.populateTransaction.createNFT(
-                            this.nftURL
-                        );
-
-                        // Override the defaults
-                        transaction.from = sender.getAddress();
-                        transaction.chainId = chainID;
-                        transaction.gasPrice = gasPrice;
-                        transaction.gasLimit = this.gasEstimation;
-                        transaction.nonce = sender.getNonce();
-
-                        // Update progress immediately after each transaction is constructed
-                        constructBar.increment();
-
-                        return {
-                            index: j,
-                            transaction,
-                            sender,
-                            success: true
-                        };
-                    } catch (error: any) {
-                        Logger.warn(`Failed to construct NFT transaction ${j}: ${error.message}`);
-                        constructBar.increment();
-                        
-                        return {
-                            index: j,
-                            transaction: null,
-                            sender,
-                            success: false
-                        };
-                    }
-                })();
-
-                batchPromises.push(txPromise);
-            }
-
-            // Wait for all transactions in this batch to complete
-            const batchResults = await Promise.all(batchPromises);
-
-            // Process results in order and update nonces
-            batchResults
-                .sort((a, b) => a.index - b.index) // Maintain order
-                .forEach(result => {
-                    if (result.success && result.transaction) {
-                        transactions.push(result.transaction);
-                        result.sender.incrNonce();
-                    }
-                });
-        }
-
-        constructBar.stop();
-        Logger.success(`Successfully constructed ${transactions.length}/${numTx} NFT transactions in parallel`);
-
-        if (transactions.length < numTx) {
-            Logger.warn(`${numTx - transactions.length} NFT transactions failed to construct`);
-        }
 
         return transactions;
     }
