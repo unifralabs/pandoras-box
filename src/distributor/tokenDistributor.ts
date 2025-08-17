@@ -298,12 +298,12 @@ class TokenDistributor {
             speed: 'N/A',
         });
 
-        const concurrency = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Can use larger batches now that nonce is managed locally
+        const batchSize = 200; 
         const successfulIndexes: { index: number; mnemonicIndex: number }[] = [];
 
         // Process accounts in batches with managed nonce
-        for (let i = 0; i < accounts.length; i += concurrency) {
-            const batch = accounts.slice(i, i + concurrency);
+        for (let i = 0; i < accounts.length; i += batchSize) {
+            const batch = accounts.slice(i, i + batchSize);
             
             const batchPromises = batch.map(async (acc, batchIndex) => {
                 // Assign nonce locally and increment for each transaction
