@@ -114,7 +114,7 @@ class TokenDistributor {
         });
 
         // Process accounts in batches to avoid overwhelming RPC endpoint
-        const batchSize = 50; // Maximum concurrent requests
+        const batchSize = this.concurrency && this.concurrency > 0 ? this.concurrency : 50; // Maximum concurrent requests
         
         for (let i = 0; i < this.readyMnemonicIndexes.length; i += batchSize) {
             const batch = this.readyMnemonicIndexes.slice(i, i + batchSize);

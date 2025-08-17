@@ -1,8 +1,8 @@
 #!/bin/bash
 
 yarn build
-transactions=5000
-batch=50
+transactions=50000
+batch=100
 subaccounts=5000
 concurrency=100
 

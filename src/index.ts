@@ -106,7 +106,7 @@ async function run() {
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
-        Logger.info(`Using fixed gas price of 1 Gwei for all transactions.`);
+        Logger.info(`Using fixed gas price of ${fixedGasPrice} for all transactions.`);
     }
 
 
