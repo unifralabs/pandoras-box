@@ -1,12 +1,14 @@
 #!/bin/bash
 
 yarn build
-transactions=10000
-batch=150
-subaccounts=500
-concurrency=20
+rm -rf out/out/pandoras-box.log
+transactions=50000
+batch=200
+subaccounts=1000
+concurrency=200
 
-RPC="https://rpc.shude.unifra.xyz"
+#RPC="https://rpc.qiaoxiaorui.org"
+RPC="http://localhost:8545"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
 
@@ -79,11 +81,11 @@ runERC721()
 # clearPending
 # exit 0
 
-#runEOA
+# runEOA
 # #getPending
 # exit 0
 
 # sleep 30
-runERC20
+# runERC20
 
-# runERC721
+runERC721

@@ -209,38 +209,38 @@ class TokenDistributor {
         Logger.info(costTable.toString());
     }
 
-    async fundAccounts(
-        costs: tokenRuntimeCosts,
-        accounts: distributeAccount[]
-    ) {
-        Logger.info('\nFunding accounts with tokens...');
+    // async fundAccounts(
+    //     costs: tokenRuntimeCosts,
+    //     accounts: distributeAccount[]
+    // ) {
+    //     Logger.info('\nFunding accounts with tokens...');
 
-        // Clear the list of ready indexes
-        this.readyMnemonicIndexes = [];
+    //     // Clear the list of ready indexes
+    //     this.readyMnemonicIndexes = [];
 
-        const fundBar = new SingleBar({
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
-            hideCursor: true,
-            format: 'Funding token accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
-        });
+    //     const fundBar = new SingleBar({
+    //         barCompleteChar: '\u2588',
+    //         barIncompleteChar: '\u2591',
+    //         hideCursor: true,
+    //         format: 'Funding token accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
+    //     });
 
-        fundBar.start(accounts.length, 0, {
-            speed: 'N/A',
-        });
+    //     fundBar.start(accounts.length, 0, {
+    //         speed: 'N/A',
+    //     });
 
-        for (const acc of accounts) {
-            await this.tokenRuntime.FundAccount(
-                acc.address,
-                acc.missingFunds.toNumber()
-            );
+    //     for (const acc of accounts) {
+    //         await this.tokenRuntime.FundAccount(
+    //             acc.address,
+    //             acc.missingFunds.toNumber()
+    //         );
 
-            fundBar.increment();
-            this.readyMnemonicIndexes.push(acc.mnemonicIndex);
-        }
+    //         fundBar.increment();
+    //         this.readyMnemonicIndexes.push(acc.mnemonicIndex);
+    //     }
 
-        fundBar.stop();
-    }
+    //     fundBar.stop();
+    // }
 
     async fundAccountsParall(
         costs: tokenRuntimeCosts,
@@ -285,7 +285,7 @@ class TokenDistributor {
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
             hideCursor: true,
-            format: 'Funding token accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
+            format: 'Funding token accounts Parall[{bar}] {percentage}% | ETA: {eta}s | {value}/{total} transactions',
         });
 
         // Get initial nonce from supplier wallet

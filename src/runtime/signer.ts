@@ -74,13 +74,13 @@ class Signer {
         }));
 
         // Fetch nonces in controlled batches to avoid overwhelming RPC
-        let batchSize = 50; // Process 50 accounts at a time
-        
+        let batchSize = 500; // Process 50 accounts at a time
+
         const walletData: { accIndex: number; wallet: any; accountNonce: number }[] = [];
-        
+
         for (let i = 0; i < wallets.length; i += batchSize) {
             const batch = wallets.slice(i, i + batchSize);
-            
+
             const batchPromises = batch.map(async ({ accIndex, wallet }) => {
                 try {
                     const accountNonce = await wallet.getTransactionCount();
@@ -93,10 +93,10 @@ class Signer {
                     return { accIndex, wallet, accountNonce: 0 };
                 }
             });
-            
+
             const batchResults = await Promise.all(batchPromises);
             walletData.push(...batchResults);
-            
+
             // Small delay between batches to reduce RPC pressure
             if (i + batchSize < wallets.length) {
                 await new Promise(resolve => setTimeout(resolve, 10)); // 100ms delay
@@ -198,10 +198,10 @@ class Signer {
     ): Promise<string[][]> {
         const flatTransactions = transactions.flat();
         const cpuCores = os.cpus().length;
-        const workerCount = numWorkers || Math.max(1, Math.min(cpuCores, flatTransactions.length));
-        
+        let workerCount = numWorkers || Math.max(1, Math.min(cpuCores, flatTransactions.length));
+        workerCount = workerCount / 2;
         Logger.info(`\nSigning transactions using ${workerCount} CPU cores...`);
-        
+
         const signBar = new SingleBar({
             barCompleteChar: '\u2588',
             barIncompleteChar: '\u2591',
@@ -222,7 +222,7 @@ class Signer {
 
         const batchSize = Math.ceil(txAccountMap.length / workerCount);
         const workerBatches = [];
-        
+
         for (let i = 0; i < workerCount; i++) {
             const start = i * batchSize;
             const end = Math.min(start + batchSize, txAccountMap.length);
@@ -240,7 +240,7 @@ class Signer {
             return new Promise((resolve, reject) => {
                 const workerPath = path.join(__dirname, 'signing-worker.js');
                 const worker = new Worker(workerPath);
-                
+
                 worker.on('message', (data) => {
                     if (data.type === 'progress') {
                         signBar.increment(data.increment);
@@ -280,13 +280,13 @@ class Signer {
             });
 
             signBar.stop();
-            
+
             const totalSigned = signedTxsFlat.length;
             Logger.success(`Successfully signed ${totalSigned}/${flatTransactions.length} transactions using ${workerCount} CPU cores`);
             Logger.info('✅ Transactions grouped by account for sequential nonce sending');
-            
+
             return signedTxsGrouped;
-            
+
         } catch (error: any) {
             signBar.stop();
             Logger.error(`Multi-threaded signing failed: ${error.message}`);
@@ -304,16 +304,16 @@ class Signer {
         transactions: TransactionRequest[]
     ): void {
         Logger.info('🔍 Checking for duplicate nonces...');
-        
+
         const nonceMap: Map<string, number[]> = new Map();
         let duplicateCount = 0;
-        
+
         // Group transactions by account address and their nonces
         for (let i = 0; i < transactions.length; i++) {
             const sender = accounts[i % accounts.length];
             const address = sender.getAddress();
             const nonce = transactions[i].nonce;
-            
+
             if (nonce !== undefined) {
                 const key = `${address}:${nonce}`;
                 if (!nonceMap.has(key)) {
@@ -322,37 +322,37 @@ class Signer {
                 nonceMap.get(key)!.push(i);
             }
         }
-        
+
         // Check for duplicates
         const accountSummary: Map<string, { total: number, duplicates: number, nonceRange: string }> = new Map();
-        
+
         for (const [key, transactionIndexes] of nonceMap.entries()) {
             const [address, nonceStr] = key.split(':');
             const nonce = parseInt(nonceStr);
-            
+
             if (!accountSummary.has(address)) {
                 accountSummary.set(address, { total: 0, duplicates: 0, nonceRange: '' });
             }
-            
+
             const summary = accountSummary.get(address)!;
             summary.total += transactionIndexes.length;
-            
+
             if (transactionIndexes.length > 1) {
                 summary.duplicates += transactionIndexes.length - 1;
                 duplicateCount += transactionIndexes.length - 1;
                 Logger.warn(`⚠️  Duplicate nonce ${nonce} for account ${address.slice(0, 8)}... (${transactionIndexes.length} transactions)`);
             }
         }
-        
+
         // Display summary
         Logger.info(`📊 Nonce Analysis Summary:`);
         Logger.info(`   Total accounts: ${accountSummary.size}`);
         Logger.info(`   Total transactions: ${transactions.length}`);
         Logger.info(`   Duplicate nonce conflicts: ${duplicateCount}`);
-        
+
         if (duplicateCount > 0) {
             Logger.warn(`⚠️  Found ${duplicateCount} nonce conflicts that may cause "replacement transaction underpriced" errors!`);
-            
+
             // Show details for each account with conflicts
             for (const [address, summary] of accountSummary.entries()) {
                 if (summary.duplicates > 0) {
@@ -362,7 +362,7 @@ class Signer {
         } else {
             Logger.success(`✅ No duplicate nonces found - all transactions should process correctly!`);
         }
-        
+
         Logger.info(''); // Empty line for spacing
     }
 }

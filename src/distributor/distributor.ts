@@ -190,7 +190,7 @@ class Distributor {
         const accountIndices = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
         
         // Process accounts in batches to avoid overwhelming RPC endpoint
-        const concurrency = 200; // Number of balances fetched in parallel per wave
+        const concurrency = 500; // Number of balances fetched in parallel per wave
         
         for (let i = 0; i < accountIndices.length; i += concurrency) {
             const accountIndexBatch = accountIndices.slice(i, i + concurrency);
