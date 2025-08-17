@@ -89,7 +89,7 @@ class Distributor {
     async distribute(): Promise<number[]> {
         Logger.title('💸 Fund distribution initialized 💸');
 
-        const threshold = parseEther('0.1');
+        const threshold = parseEther('1');
         // Check if there are any addresses that need funding
         const shortAddresses = await this.findAccountsForDistribution(
             threshold
