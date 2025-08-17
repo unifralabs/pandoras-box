@@ -1,9 +1,9 @@
 #!/bin/bash
 
 yarn build
-transactions=50000
-batch=100
-subaccounts=5000
+transactions=10000
+batch=150
+subaccounts=500
 concurrency=20
 
 RPC="https://rpc.shude.unifra.xyz"

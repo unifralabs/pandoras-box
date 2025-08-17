@@ -315,7 +315,7 @@ class StatCollector {
                         for (const tx of block.transactions) {
                             const txHash = tx.hash;
                             if (targetTxSet.has(txHash)) {
-                                succeededTransactions.push(new txStats(txHash, blockNumber));
+                                succeededTransactions.push(new txStats(txHash, block.number));
                                 scanBar.update(succeededTransactions.length, {});
                             }
                         }
@@ -533,9 +533,10 @@ class StatCollector {
 
         // Handle edge cases: we need at least two blocks with transactions to calculate a TPS range.
         if (sortedBlocks.length < 2) {
-            Logger.warn(
+            Logger.error(
                 'Insufficient data to calculate Overall TPS (need at least 2 blocks with transactions)'
             );
+            Logger.error(`Found only ${sortedBlocks.length} block(s) with transactions.`);
             return 0;
         }
 
@@ -567,9 +568,11 @@ class StatCollector {
         totalTime = Math.abs(lastBlockInfo.createdAt - firstBlockInfo.createdAt);
 
         if (totalTxs === 0) {
-            Logger.warn(
+            const firstBlockTxCount = stats.filter(s => s.block === firstBlock).length;
+            Logger.error(
                 'No transactions found in blocks after the first one. Cannot calculate Overall TPS.'
             );
+            Logger.error(`Total transactions in first block (${firstBlock}): ${firstBlockTxCount}`);
             return 0;
         }
 

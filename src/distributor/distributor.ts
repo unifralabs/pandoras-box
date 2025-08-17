@@ -12,7 +12,7 @@ import DistributorErrors from './errors';
 // Timeout constants (in milliseconds)
 const TIMEOUT_CONSTANTS = {
     QUICK_OPERATION: 5000,    // 5 seconds for quick network calls (gas price, nonce, etc.)
-    BALANCE_QUERY: 5000,      // 5 seconds for balance queries
+    BALANCE_QUERY: 10000,      // 5 seconds for balance queries
     TRANSACTION_SEND: 15000,   // 15 seconds for sending transactions
     TRANSACTION_CONFIRM: 18000 // 18 seconds for transaction confirmation
 } as const;
@@ -232,7 +232,7 @@ class Distributor {
                     // For failed balance queries, we'll assume the account has sufficient funds
                     // to avoid blocking the entire process. This is a conservative fallback.
                     if (result.error && result.error.includes('timed out')) {
-                        Logger.info(`Assuming account ${result.index} has sufficient funds due to timeout`);
+                        Logger.warn(`Assuming account ${result.index} has sufficient funds due to timeout`);
                         this.readyMnemonicIndexes.push(result.index);
                     }
                     continue;
