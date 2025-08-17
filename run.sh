@@ -1,7 +1,7 @@
 #!/bin/bash
 
 yarn build
-transactions=1000
+transactions=5000
 batch=50
 subaccounts=5000
 concurrency=100
@@ -12,6 +12,8 @@ MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary bette
 
 out=latest
 mkdir -p ${out}
+
+rm -rf out/pandoras-box.log
 
 getPending(){
     ./bin/index.js --mode GET_PENDING_COUNT -u $RPC
