@@ -49,20 +49,37 @@ class TokenDistributor {
         const baseCosts = await this.calculateRuntimeCosts();
         this.printCostTable(baseCosts);
 
+        // Since a new contract is deployed every time, all accounts start with 0 tokens.
+        // We can skip checking balances and assume all ready accounts need funding.
+        Logger.info('Assuming all accounts need token funding for new contract (skipping balance check)...');
+        const shortAddresses = new Heap<distributeAccount>();
+        for (const index of this.readyMnemonicIndexes) {
+            const addrWallet = Wallet.fromMnemonic(
+                this.mnemonic,
+                `m/44'/60'/0'/0/${index}`
+            );
+            shortAddresses.push(
+                new distributeAccount(
+                    BigNumber.from(baseCosts.subAccount),
+                    addrWallet.address,
+                    index
+                )
+            );
+        }
+        /*
         // Check if there are any addresses that need funding
         const shortAddresses = await this.findAccountsForDistribution(
             baseCosts.subAccount
         );
+        */
 
         const initialAccCount = shortAddresses.size();
 
-        if (initialAccCount == 0) {
-            // Nothing to distribute
-            Logger.success(
-                'Accounts are fully funded with tokens for the cycle'
+        if (initialAccCount === 0) {
+            Logger.warn(
+                'No accounts with sufficient gas fees were found to distribute tokens to.'
             );
-
-            return this.readyMnemonicIndexes;
+            return [];
         }
 
         // Get a list of accounts that can be funded

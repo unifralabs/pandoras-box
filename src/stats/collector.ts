@@ -82,25 +82,12 @@ class StatCollector {
      */
     async getPendingTransactionCount(provider: Provider): Promise<number> {
         try {
-            // Method 1: Try txpool_status (if supported by the node)
-            const txpoolStatus = await this.getTxpoolStatus(provider);
-            if (txpoolStatus !== null) {
-                Logger.debug('Used method: txpool_status');
-                return txpoolStatus.pending || 0;
-            }
-
-            // Method 2: Use eth_getBlockTransactionCountByNumber with "pending"
             const pendingCount = await this.getPendingBlockTransactionCount(provider);
             if (pendingCount !== null) {
                 Logger.debug('Used method: eth_getBlockTransactionCountByNumber("pending")');
                 return pendingCount;
             }
-
-            // Method 3: Fallback - estimate by checking latest block vs pending block
-            Logger.debug('Used method: eth_getTransactionCount("pending")');
-            const pendingBlockCount = await provider.getTransactionCount("0x0000000000000000000000000000000000000000", "pending");
-
-            return Math.max(0, pendingBlockCount);
+            return 0;
         } catch (error: any) {
             Logger.warn(`Failed to get pending transaction count: ${error.message}`);
             return 0;
