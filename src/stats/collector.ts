@@ -552,20 +552,21 @@ class StatCollector {
             }
         }
 
-        // Calculate total time span from first block to last block
+        // Calculate total time span from second block to last block
         const lastBlock = sortedBlocks[sortedBlocks.length - 1];
+        const secondBlock = sortedBlocks[1];
 
-        const firstBlockInfo = blockInfoMap.get(firstBlock);
         const lastBlockInfo = blockInfoMap.get(lastBlock);
+        const secondBlockInfo = blockInfoMap.get(secondBlock);
 
-        if (!firstBlockInfo || !lastBlockInfo) {
+        if (!secondBlockInfo || !lastBlockInfo) {
             Logger.error(
-                'Failed to find first or last block info in the pre-fetched map during TPS calculation.'
+                'Failed to find second or last block info in the pre-fetched map during TPS calculation.'
             );
             return 0;
         }
 
-        totalTime = Math.abs(lastBlockInfo.createdAt - firstBlockInfo.createdAt);
+        totalTime = Math.abs(lastBlockInfo.createdAt - secondBlockInfo.createdAt);
 
         if (totalTxs === 0) {
             const firstBlockTxCount = stats.filter(s => s.block === firstBlock).length;
@@ -578,7 +579,7 @@ class StatCollector {
 
         if (totalTime === 0) {
             Logger.warn(
-                'First and last blocks have the same timestamp. Using a minimum of 1s for TPS calculation to avoid division by zero.'
+                'Second and last blocks have the same timestamp. Using a minimum of 1s for TPS calculation to avoid division by zero.'
             );
             totalTime = 1;
         }
