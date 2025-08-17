@@ -531,20 +531,21 @@ class StatCollector {
 
         const sortedBlocks = Array.from(uniqueBlocks).sort((a, b) => a - b);
 
-        // Handle edge cases: we need at least two blocks with transactions to calculate a TPS range.
-        if (sortedBlocks.length < 2) {
+        // Handle edge cases: we need at least 3 blocks with transactions to calculate a TPS range.
+        if (sortedBlocks.length < 3) {
             Logger.error(
-                'Insufficient data to calculate Overall TPS (need at least 2 blocks with transactions)'
+                'Insufficient data to calculate Overall TPS (need at least 3 blocks with transactions)'
             );
             Logger.error(`Found only ${sortedBlocks.length} block(s) with transactions.`);
             return 0;
         }
 
         const firstBlock = sortedBlocks[0];
+        const secondBlock = sortedBlocks[1];
 
-        // Count transactions excluding the first block (consistent with individual block TPS logic)
+        // Count transactions excluding the first and second blocks
         for (const stat of stats) {
-            if (stat.block == firstBlock) {
+            if (stat.block === firstBlock || stat.block === secondBlock) {
                 continue;
             }
             if (stat.block !== 0) {
@@ -554,7 +555,6 @@ class StatCollector {
 
         // Calculate total time span from second block to last block
         const lastBlock = sortedBlocks[sortedBlocks.length - 1];
-        const secondBlock = sortedBlocks[1];
 
         const lastBlockInfo = blockInfoMap.get(lastBlock);
         const secondBlockInfo = blockInfoMap.get(secondBlock);
@@ -569,11 +569,9 @@ class StatCollector {
         totalTime = Math.abs(lastBlockInfo.createdAt - secondBlockInfo.createdAt);
 
         if (totalTxs === 0) {
-            const firstBlockTxCount = stats.filter(s => s.block === firstBlock).length;
             Logger.error(
-                'No transactions found in blocks after the first one. Cannot calculate Overall TPS.'
+                'No transactions found in blocks after the second one. Cannot calculate Overall TPS.'
             );
-            Logger.error(`Total transactions in first block (${firstBlock}): ${firstBlockTxCount}`);
             return 0;
         }
 
