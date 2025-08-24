@@ -8,6 +8,7 @@
     "license": "Apache-2.0",
     "devDependencies": {
         "@eslint/js": "^9.0.0",
+        "@types/better-sqlite3": "^7.6.13",
         "@types/cli-progress": "^3.11.0",
         "@types/node": "^20.1.0",
         "@typescript-eslint/eslint-plugin": "^7.5.0",
@@ -48,12 +49,14 @@
         "@types/cli-table": "^0.3.1",
         "@types/heap": "^0.2.31",
         "axios": "^1.2.1",
+        "better-sqlite3": "^12.2.0",
         "chalk": "4.1.2",
         "cli-progress": "^3.11.2",
         "cli-table3": "^0.6.3",
         "commander": "^12.0.0",
         "ethers": "^6.15.0",
-        "heap": "^0.2.7"
+        "heap": "^0.2.7",
+        "zeromq": "^6.5.0"
     },
     "repository": {
         "type": "git",
