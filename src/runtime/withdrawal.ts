@@ -11,6 +11,7 @@ import Logger from '../logger/logger';
 import { senderAccount } from './signer';
 import { parseUnits } from '@ethersproject/units';
 import bs58check from 'bs58check';
+import { startDogecoinListener, createTxDatabase } from '../tools/dogecoinZmqTest';
 
 const MoatABI = [
     {
@@ -97,7 +98,23 @@ class WithdrawalRuntime {
         this.moatContractAddress = moatContractAddress;
         this.targetAddress = targetAddress;
         this.fixedGasPrice = fixedGasPrice;
+
+        // start Dogecoin listener once
+        if (!WithdrawalRuntime.listenerStarted) {
+            try {
+                const decoded = bs58check.decode(this.targetAddress);
+                const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
+                const db = createTxDatabase();
+                startDogecoinListener(db, undefined, hash20).catch(console.error);
+                Logger.info(`Dogecoin listener started with target hash ${hash20}`);
+                WithdrawalRuntime.listenerStarted = true;
+            } catch (err) {
+                Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
+            }
+        }
     }
+
+    private static listenerStarted = false;
 
     async EstimateBaseTx(): Promise<BigNumber> {
         // EOA to EOA transfers are simple value transfers between accounts
@@ -166,6 +183,7 @@ class WithdrawalRuntime {
             const decoded = bs58check.decode(this.targetAddress);
             targetHex = '0x' + Buffer.from(decoded.subarray(1)).toString('hex');
             Logger.info(`Decoded target address ${this.targetAddress} to ${targetHex}`);
+
         } catch (err) {
             Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
             throw err;

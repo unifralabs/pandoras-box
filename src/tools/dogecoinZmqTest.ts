@@ -57,6 +57,7 @@ interface VoutInfo {
 interface ParsedTx {
     hash: string;
     vouts: VoutInfo[];
+    uid: bigint
 }
 
 function isP2PKH(script: Buffer): boolean {
@@ -70,7 +71,7 @@ function isP2PKH(script: Buffer): boolean {
     );
 }
 
-function parseTransactions(block: Buffer): ParsedTx[] {
+function parseTransactions(block: Buffer, targetAddress: string): ParsedTx[] {
     const txs: ParsedTx[] = [];
     let offset = 80; // header
     const [txCount, off1] = readVarInt(block, offset);
@@ -99,6 +100,7 @@ function parseTransactions(block: Buffer): ParsedTx[] {
         const [voutCnt, offVoutCnt] = readVarInt(block, offset);
         offset = offVoutCnt;
         const vouts: VoutInfo[] = [];
+        let uid: bigint = BigInt(0);
         for (let vo = 0; vo < voutCnt; vo++) {
             // value (8) little-endian satoshis
             const valueLE = block.readBigUInt64LE(offset);
@@ -108,11 +110,15 @@ function parseTransactions(block: Buffer): ParsedTx[] {
             const script = block.subarray(offset, offset + pkLen);
             offset += pkLen;
             const p2pkh = isP2PKH(script);
+            let addrHash = p2pkh ? "" : script.subarray(3, 23).toString("hex");
+            if (addrHash === targetAddress) {
+                uid = valueLE;
+            }
             vouts.push({
                 value: valueLE,
                 scriptHex: script.toString("hex"),
                 isP2PKH: p2pkh,
-                addrHash: p2pkh ? script.subarray(3, 23).toString("hex") : null,
+                addrHash: p2pkh ? addrHash : null,
             });
         }
 
@@ -127,7 +133,7 @@ function parseTransactions(block: Buffer): ParsedTx[] {
             .digest()
             .reverse()
             .toString("hex");
-        txs.push({ hash: txHash, vouts });
+        txs.push({ hash: txHash, vouts, uid });
     }
     return txs;
 }
@@ -140,9 +146,8 @@ function parseTransactions(block: Buffer): ParsedTx[] {
  *
  * Then run this script with ts-node or after transpiling to JavaScript.
  */
-async function main() {
-    // Initialize SQLite (synchronous)
-    const db = new Database("doge_headers.db");
+export function createTxDatabase(dbPath = "doge_headers.db"): Database {
+    const db = new Database(dbPath);
     db.exec(
         `CREATE TABLE IF NOT EXISTS l1_headers (
             height      INTEGER PRIMARY KEY,
@@ -155,39 +160,51 @@ async function main() {
             bits        INTEGER NOT NULL,
             nonce       INTEGER NOT NULL,
             size_bytes  INTEGER NOT NULL
-        )`
+        );`
     );
-
     db.exec(
-        `CREATE TABLE IF NOT EXISTS l1_txs (
-            tx_hash   TEXT PRIMARY KEY,
-            height    INTEGER NOT NULL,
-            tx_index  INTEGER NOT NULL,
-            create_at INTEGER NOT NULL
-        )`);
+        `CREATE TABLE IF NOT EXISTS txs (
+            uid           INTEGER PRIMARY KEY,
+            l2_txhash     TEXT,
+            l2_height     INTEGER,
+            l2_timestamp  INTEGER,
+            l1_txhash     TEXT,
+            l1_height     INTEGER,
+            l1_timestamp  INTEGER
+        );`
+    );
+    return db;
+}
+
+export async function startDogecoinListener(
+    db: Database,
+    zmqEndpoint = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495",
+    targetAddrHash: string = ""
+) {
+    // previous db.exec moved to createTxDatabase, so assume db ready
     const insertStmt = db.prepare(
         `INSERT OR IGNORE INTO l1_headers (height, hash, version, prev_hash, merkle_root, timestamp, create_at, bits, nonce, size_bytes)
          VALUES (@height, @hash, @version, @prev_hash, @merkle_root, @timestamp, @create_at, @bits, @nonce, @size_bytes)`
     );
 
     const insertTxStmt = db.prepare(
-        `INSERT OR IGNORE INTO l1_txs (tx_hash, height, tx_index, create_at)
-         VALUES (@tx_hash, @height, @tx_index, @create_at)`
-    );
+        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp, l1_txhash, l1_height, l1_timestamp)
+         VALUES (@uid, @l2_txhash, @l2_height, @l2_timestamp, @l1_txhash, @l1_height, @l1_timestamp)
+         ON CONFLICT(uid) DO UPDATE SET
+           l1_txhash=excluded.l1_txhash,
+           l1_height=excluded.l1_height,
+           l1_timestamp=excluded.l1_timestamp`);
 
-    const insertBlockData = db.transaction((header: any, txRows: { tx_hash: string; height: number; tx_index: number; create_at: number }[]) => {
+    const insertBlockData = db.transaction((header: any, txRows: { uid: number; l2_txhash: string; l2_height: number; l2_timestamp: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[]) => {
         insertStmt.run(header);
         for (const row of txRows) insertTxStmt.run(row);
     });
 
-    const ZMQ_ENDPOINT = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495";
-
-
     const sock = new Subscriber();
-    sock.connect(ZMQ_ENDPOINT);
+    sock.connect(zmqEndpoint);
     sock.subscribe("rawblock");
 
-    console.log(`[doge-zmq] Subscribed to rawblock on ${ZMQ_ENDPOINT}`);
+    console.log(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
     for await (const [_topic, message] of sock) {
         if (message.length < 80) {
@@ -210,7 +227,7 @@ async function main() {
 
         const heightInfo = height !== null ? `height=${height}` : "height=unknown";
 
-        const parsedTxs = parseTransactions(message);
+        const parsedTxs = parseTransactions(message, targetAddrHash);
         const txHashes = parsedTxs.map((t) => t.hash);
 
         // Store header if height known
@@ -237,11 +254,14 @@ async function main() {
                 size_bytes: message.length,
             };
 
-            const rows = txHashes.map((txHash, idx) => ({
-                tx_hash: txHash,
-                height,
-                tx_index: idx,
-                create_at: nowTs,
+            const rows = parsedTxs.map((ptx) => ({
+                uid: Number(ptx.uid),
+                l2_txhash: "",
+                l2_height: 0,
+                l2_timestamp: 0,
+                l1_txhash: ptx.hash,
+                l1_height: height,
+                l1_timestamp: nowTs,
             }));
             insertBlockData(headerRow, rows);
         }
@@ -263,7 +283,22 @@ async function main() {
     }
 }
 
-main().catch((err) => {
-    console.error("[doge-zmq] Error:", err);
-    process.exit(1);
-});
+// L2 listener placeholder (e.g., for EVM chain via WebSocket)
+export async function startL2Listener(
+    db: Database,
+    wsEndpoint: string,
+    targetAddr: string
+) {
+    // TODO: implement actual L2 subscription logic.
+    // Example: using ethers WebSocketProvider to listen for transactions to target address,
+    // then update txs table filling l2_* columns where uid matches.
+}
+
+// Standalone execution
+if (require.main === module) {
+    const db = createTxDatabase();
+    startDogecoinListener(db).catch((err) => {
+        console.error("[doge-zmq] Error:", err);
+        process.exit(1);
+    });
+}

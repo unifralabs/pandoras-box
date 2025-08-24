@@ -220,18 +220,17 @@ async function run() {
         )
     );
 
-    // Collect the data
-    const collectorData = await new StatCollector().generateStats(
-        txHashes,
-        mnemonic,
-        url,
-        batchSize,
-        startBlock
-    );
-
-    // Output the data if needed
-    if (output) {
-        Outputter.outputData(collectorData, output);
+    if (mode !== RuntimeType.WITHDRAWAL) {
+        const collectorData = await new StatCollector().generateStats(
+            txHashes,
+            mnemonic,
+            url,
+            batchSize,
+            startBlock
+        );
+        if (output) {
+            Outputter.outputData(collectorData, output);
+        }
     }
 }
 
