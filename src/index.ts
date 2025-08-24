@@ -19,6 +19,7 @@ import {
 } from './runtime/runtimes';
 import { StatCollector } from './stats/collector';
 import { parseUnits } from '@ethersproject/units'; // ADDED
+import WithdrawalRuntime from './runtime/withdrawal';
 
 async function run() {
     const program = new Command();
@@ -70,8 +71,12 @@ async function run() {
         )
         .option(
             '--mode <mode>',
-            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING, GET_PENDING_COUNT]',
+            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING, GET_PENDING_COUNT, WITHDRAWAL]',
             'EOA'
+        )
+        .option(
+            '--moat-address <address>',
+            'Moat contract address used in WITHDRAWAL mode'
         )
         .option(
             '-o, --output <output-path>',
@@ -103,6 +108,7 @@ async function run() {
     const startIndex = parseInt(options.startIndex, 10);
     const endIndex = options.endIndex ? parseInt(options.endIndex, 10) : undefined;
     let fixedGasPrice = null;
+    const moatAddress = options.moatAddress;
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
@@ -151,6 +157,13 @@ async function run() {
             Logger.info('\nDeploying ERC721 contract, this may take a moment...');
             await (runtime as InitializedRuntime).Initialize();
             Logger.success('ERC721 contract deployed successfully.');
+            break;
+        case RuntimeType.WITHDRAWAL:
+            if (!moatAddress) {
+                Logger.error('Error: --moat-address is required for WITHDRAWAL mode.');
+                return;
+            }
+            runtime = new WithdrawalRuntime(mnemonic, url, moatAddress, fixedGasPrice);
             break;
         default:
             throw RuntimeErrors.errUnknownRuntime;

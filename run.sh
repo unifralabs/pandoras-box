@@ -2,13 +2,12 @@
 
 yarn build
 rm -rf out/out/pandoras-box.log
-transactions=50000
+transactions=2000
 batch=200
-subaccounts=1000
-concurrency=200
+subaccounts=300
+concurrency=20
 
-#RPC="https://rpc.qiaoxiaorui.org"
-RPC="http://localhost:8545"
+RPC="https://rpc.dg.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
 
@@ -75,7 +74,20 @@ runERC721()
     exit 0
 }
 
+MOAT_CONTRACT=0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2
+runWithDrawal(){
+    ./bin/index.js -u $RPC -m "$MNEMONIC" \
+    --fixed-gas-price \
+    -t $transactions \
+    -b $batch \
+    -s $subaccounts \
+    -c $concurrency \
+    --moat-address $MOAT_CONTRACT \
+    --mode WITHDRAWAL \
+    -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
+}
 
+runWithDrawal
 
 # getPending
 # clearPending
@@ -88,4 +100,4 @@ runERC721()
 # sleep 30
 # runERC20
 
-runERC721
+# runERC721

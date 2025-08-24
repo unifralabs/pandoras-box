@@ -9,6 +9,7 @@ export enum RuntimeType {
     GREETER = 'GREETER',
     CLEAR_PENDING = 'CLEAR_PENDING',
     GET_PENDING_COUNT = 'GET_PENDING_COUNT',
+    WITHDRAWAL = 'WITHDRAWAL',
 }
 
 export interface Runtime {
