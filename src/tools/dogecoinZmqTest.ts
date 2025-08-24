@@ -47,6 +47,91 @@ function extractHeightFromBlock(block: Buffer): number | null {
     return height;
 }
 
+interface VoutInfo {
+    value: bigint;
+    scriptHex: string;
+    isP2PKH: boolean;
+    addrHash?: string | null;
+}
+
+interface ParsedTx {
+    hash: string;
+    vouts: VoutInfo[];
+}
+
+function isP2PKH(script: Buffer): boolean {
+    return (
+        script.length === 25 &&
+        script[0] === 0x76 && // OP_DUP
+        script[1] === 0xa9 && // OP_HASH160
+        script[2] === 0x14 && // push 20 bytes
+        script[23] === 0x88 && // OP_EQUALVERIFY
+        script[24] === 0xac // OP_CHECKSIG
+    );
+}
+
+function parseTransactions(block: Buffer): ParsedTx[] {
+    const txs: ParsedTx[] = [];
+    let offset = 80; // header
+    const [txCount, off1] = readVarInt(block, offset);
+    offset = off1;
+
+    for (let i = 0; i < txCount; i++) {
+        const txStart = offset;
+
+        // version
+        offset += 4;
+
+        // Dogecoin currently has no segwit, so directly read vin count
+        const [vinCnt, offVinCnt] = readVarInt(block, offset);
+        offset = offVinCnt;
+        for (let vi = 0; vi < vinCnt; vi++) {
+            // prev hash + index
+            offset += 32 + 4;
+            // script len
+            const [scriptLen, offSL] = readVarInt(block, offset);
+            offset = offSL + scriptLen;
+            // sequence
+            offset += 4;
+        }
+
+        // vout count
+        const [voutCnt, offVoutCnt] = readVarInt(block, offset);
+        offset = offVoutCnt;
+        const vouts: VoutInfo[] = [];
+        for (let vo = 0; vo < voutCnt; vo++) {
+            // value (8) little-endian satoshis
+            const valueLE = block.readBigUInt64LE(offset);
+            offset += 8;
+            const [pkLen, offPK] = readVarInt(block, offset);
+            offset = offPK;
+            const script = block.subarray(offset, offset + pkLen);
+            offset += pkLen;
+            const p2pkh = isP2PKH(script);
+            vouts.push({
+                value: valueLE,
+                scriptHex: script.toString("hex"),
+                isP2PKH: p2pkh,
+                addrHash: p2pkh ? script.subarray(3, 23).toString("hex") : null,
+            });
+        }
+
+        // locktime
+        offset += 4;
+
+        const txEnd = offset;
+        const txBuf = block.subarray(txStart, txEnd);
+        const txHash = crypto
+            .createHash("sha256")
+            .update(crypto.createHash("sha256").update(txBuf).digest())
+            .digest()
+            .reverse()
+            .toString("hex");
+        txs.push({ hash: txHash, vouts });
+    }
+    return txs;
+}
+
 /**
  * Simple script to test Dogecoin's ZMQ interface.
  *
@@ -72,10 +157,28 @@ async function main() {
             size_bytes  INTEGER NOT NULL
         )`
     );
+
+    db.exec(
+        `CREATE TABLE IF NOT EXISTS l1_txs (
+            tx_hash   TEXT PRIMARY KEY,
+            height    INTEGER NOT NULL,
+            tx_index  INTEGER NOT NULL,
+            create_at INTEGER NOT NULL
+        )`);
     const insertStmt = db.prepare(
         `INSERT OR IGNORE INTO l1_headers (height, hash, version, prev_hash, merkle_root, timestamp, create_at, bits, nonce, size_bytes)
          VALUES (@height, @hash, @version, @prev_hash, @merkle_root, @timestamp, @create_at, @bits, @nonce, @size_bytes)`
     );
+
+    const insertTxStmt = db.prepare(
+        `INSERT OR IGNORE INTO l1_txs (tx_hash, height, tx_index, create_at)
+         VALUES (@tx_hash, @height, @tx_index, @create_at)`
+    );
+
+    const insertBlockData = db.transaction((header: any, txRows: { tx_hash: string; height: number; tx_index: number; create_at: number }[]) => {
+        insertStmt.run(header);
+        for (const row of txRows) insertTxStmt.run(row);
+    });
 
     const ZMQ_ENDPOINT = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495";
 
@@ -104,7 +207,11 @@ async function main() {
         const blockHash = Buffer.from(hashBuffer).reverse().toString("hex");
 
         const height = extractHeightFromBlock(message);
+
         const heightInfo = height !== null ? `height=${height}` : "height=unknown";
+
+        const parsedTxs = parseTransactions(message);
+        const txHashes = parsedTxs.map((t) => t.hash);
 
         // Store header if height known
         if (height !== null) {
@@ -116,23 +223,41 @@ async function main() {
             const bits = message.readUInt32LE(72);
             const nonce = message.readUInt32LE(76);
 
-            insertStmt.run({
+            const nowTs = Math.floor(Date.now() / 1000);
+            const headerRow = {
                 height,
                 hash: blockHash,
                 version,
                 prev_hash: prevHash,
                 merkle_root: merkleRoot,
                 timestamp,
-                create_at: Math.floor(Date.now() / 1000),
+                create_at: nowTs,
                 bits,
                 nonce,
                 size_bytes: message.length,
-            });
+            };
+
+            const rows = txHashes.map((txHash, idx) => ({
+                tx_hash: txHash,
+                height,
+                tx_index: idx,
+                create_at: nowTs,
+            }));
+            insertBlockData(headerRow, rows);
+        }
+
+        // Example log of first tx vouts
+        if (parsedTxs.length > 0) {
+            const firstTx = parsedTxs[0];
+            console.debug(`[doge-zmq] First tx ${firstTx.hash} vouts=${firstTx.vouts.length}`);
         }
 
         console.log(
-            `[doge-zmq] New block: ${blockHash} ${heightInfo} (size: ${message.length} bytes)`
+            `[doge-zmq] New block: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
         );
+
+        // Optional: print hashes or store as needed
+        // console.log(txHashes);
         // 把区块头信息写入sqlite中，表名 l1_headers
 
     }

@@ -8,6 +8,7 @@ declare module "better-sqlite3" {
         constructor(filename: string, options?: DatabaseOptions);
         exec(sql: string): void;
         prepare<T = any>(sql: string): Statement<T>;
+        transaction<T extends (...args: any[]) => any>(fn: T): T;
     }
 
     interface Statement<T = any> {

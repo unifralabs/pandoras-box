@@ -2,10 +2,10 @@
 
 yarn build
 rm -rf out/out/pandoras-box.log
-transactions=2000
-batch=200
-subaccounts=300
-concurrency=20
+transactions=1
+batch=1
+subaccounts=1
+concurrency=1
 
 RPC="https://rpc.dg.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
@@ -84,6 +84,7 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
+    --target-address "nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
 

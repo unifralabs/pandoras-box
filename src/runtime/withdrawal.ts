@@ -10,6 +10,7 @@ import { SingleBar } from 'cli-progress';
 import Logger from '../logger/logger';
 import { senderAccount } from './signer';
 import { parseUnits } from '@ethersproject/units';
+import bs58check from 'bs58check';
 
 const MoatABI = [
     {
@@ -81,12 +82,20 @@ class WithdrawalRuntime {
     defaultValue: BigNumber = BigNumber.from(110000000);
     fixedGasPrice: BigNumber | null;
     moatContractAddress: string;
+    targetAddress: string;
 
-    constructor(mnemonic: string, url: string, moatContractAddress: string, fixedGasPrice: BigNumber | null = null) {
+    constructor(
+        mnemonic: string,
+        url: string,
+        moatContractAddress: string,
+        targetAddress: string,
+        fixedGasPrice: BigNumber | null = null
+    ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
         this.moatContractAddress = moatContractAddress;
+        this.targetAddress = targetAddress;
         this.fixedGasPrice = fixedGasPrice;
     }
 
@@ -150,14 +159,24 @@ class WithdrawalRuntime {
         Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
 
         const moatInterface = new Interface(MoatABI);
-        const placeholderTarget = '0xbc7656b9d24943793cbdd73fe392aca6ba7a9c3a';
+
+        // Decode base58 address to 20-byte hex (skip version byte)
+        let targetHex: string;
+        try {
+            const decoded = bs58check.decode(this.targetAddress);
+            targetHex = '0x' + Buffer.from(decoded.subarray(1)).toString('hex');
+            Logger.info(`Decoded target address ${this.targetAddress} to ${targetHex}`);
+        } catch (err) {
+            Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
+            throw err;
+        }
 
         // Estimate gas for withdrawToL1 once (using first valid account)
         const sampleGas = await this.provider.estimateGas({
             from: validAccounts[0].getAddress(),
             to: this.moatContractAddress,
             value: this.GetValue(),
-            data: moatInterface.encodeFunctionData('withdrawToL1', [placeholderTarget]),
+            data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
         });
         this.gasEstimation = sampleGas.mul(2); // add safety margin
 
@@ -192,7 +211,7 @@ class WithdrawalRuntime {
                 gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
                 value: this.defaultValue.add(BigNumber.from(senderIndex * 1e5 + i)).mul(1e10),
-                data: moatInterface.encodeFunctionData('withdrawToL1', [placeholderTarget]),
+                data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
             });
 

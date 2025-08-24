@@ -79,6 +79,10 @@ async function run() {
             'Moat contract address used in WITHDRAWAL mode'
         )
         .option(
+            '--target-address <address>',
+            'L1 target address for withdrawToL1 in WITHDRAWAL mode'
+        )
+        .option(
             '-o, --output <output-path>',
             'The output path for the results JSON'
         )
@@ -109,6 +113,7 @@ async function run() {
     const endIndex = options.endIndex ? parseInt(options.endIndex, 10) : undefined;
     let fixedGasPrice = null;
     const moatAddress = options.moatAddress;
+    const targetAddress = options.targetAddress || '0x000000000000000000000000000000000000dead';
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
@@ -163,7 +168,8 @@ async function run() {
                 Logger.error('Error: --moat-address is required for WITHDRAWAL mode.');
                 return;
             }
-            runtime = new WithdrawalRuntime(mnemonic, url, moatAddress, fixedGasPrice);
+            //targetAddress 是这种格式: nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH
+            runtime = new WithdrawalRuntime(mnemonic, url, moatAddress, targetAddress, fixedGasPrice);
             break;
         default:
             throw RuntimeErrors.errUnknownRuntime;

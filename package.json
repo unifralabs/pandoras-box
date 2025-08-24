@@ -50,6 +50,7 @@
         "@types/heap": "^0.2.31",
         "axios": "^1.2.1",
         "better-sqlite3": "^12.2.0",
+        "bs58check": "^4.0.0",
         "chalk": "4.1.2",
         "cli-progress": "^3.11.2",
         "cli-table3": "^0.6.3",
