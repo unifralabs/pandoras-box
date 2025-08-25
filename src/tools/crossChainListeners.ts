@@ -1,11 +1,13 @@
 import { Subscriber } from "zeromq";
 import crypto from "crypto";
 import axios from "axios";
-import Database from "better-sqlite3";
+import BetterSqlite3 from "better-sqlite3";
+type DB = InstanceType<typeof BetterSqlite3>;
 import { ethers } from "ethers";
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
 import MoatABI from "../abi/moat";
+import Logger from "../logger/logger";
 
 /** Decode Bitcoin-style VarInt. Returns [value, newOffset] */
 function readVarInt(buf: Buffer, offset: number): [number, number] {
@@ -75,7 +77,7 @@ function isP2PKH(script: Buffer): boolean {
     );
 }
 
-function parseTransactions(block: Buffer, targetAddress: string): ParsedTx[] {
+function parseTransactions(block: Buffer, targetAddressHash: string): ParsedTx[] {
     const txs: ParsedTx[] = [];
     let offset = 80; // header
     const [txCount, off1] = readVarInt(block, offset);
@@ -115,7 +117,7 @@ function parseTransactions(block: Buffer, targetAddress: string): ParsedTx[] {
             offset += pkLen;
             const p2pkh = isP2PKH(script);
             let addrHash = p2pkh ? "" : script.subarray(3, 23).toString("hex");
-            if (addrHash === targetAddress) {
+            if (addrHash === targetAddressHash) {
                 uid = valueLE;
             }
             vouts.push({
@@ -150,8 +152,8 @@ function parseTransactions(block: Buffer, targetAddress: string): ParsedTx[] {
  *
  * Then run this script with ts-node or after transpiling to JavaScript.
  */
-export function createTxDatabase(dbPath = "doge_headers.db"): Database {
-    const db = new Database(dbPath);
+export function createTxDatabase(dbPath = "doge_headers.db"): DB {
+    const db = new BetterSqlite3(dbPath);
     db.exec(
         `CREATE TABLE IF NOT EXISTS l1_headers (
             height      INTEGER PRIMARY KEY,
@@ -179,9 +181,15 @@ export function createTxDatabase(dbPath = "doge_headers.db"): Database {
     );
     return db;
 }
-
+/**
+ * 
+ * @param db 
+ * @param zmqEndpoint 
+ * @param targetAddrHash 20-byte hex without 0x
+ * @returns 
+ */
 export async function startL1Listener(
-    db: Database,
+    db: DB,
     zmqEndpoint = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495",
     targetAddrHash: string = ""
 ) {
@@ -208,11 +216,11 @@ export async function startL1Listener(
     sock.connect(zmqEndpoint);
     sock.subscribe("rawblock");
 
-    console.log(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
+    Logger.info(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
     for await (const [_topic, message] of sock) {
         if (message.length < 80) {
-            console.warn(`[doge-zmq] Received short rawblock message (${message.length} bytes), expected >= 80. Skipping.`);
+            Logger.warn(`[doge-zmq] Received short rawblock message (${message.length} bytes), expected >= 80. Skipping.`);
             continue;
         }
         // The message payload is the raw block in binary form.
@@ -273,10 +281,10 @@ export async function startL1Listener(
         // Example log of first tx vouts
         if (parsedTxs.length > 0) {
             const firstTx = parsedTxs[0];
-            console.debug(`[doge-zmq] First tx ${firstTx.hash} vouts=${firstTx.vouts.length}`);
+            Logger.debug(`[doge-zmq] First tx ${firstTx.hash} vouts=${firstTx.vouts.length}`);
         }
 
-        console.log(
+        Logger.info(
             `[doge-zmq] New block: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
         );
 
@@ -289,7 +297,7 @@ export async function startL1Listener(
 
 // L2 listener placeholder (e.g., for EVM chain via WebSocket)
 export async function startL2Listener(
-    db: Database,
+    db: DB,
     rpcEndpoint: string,
     moatAddress: string
 ) {
@@ -302,6 +310,7 @@ export async function startL2Listener(
     const moatLower = moatAddress.toLowerCase();
 
     provider.on("block", async (blockNumber: number) => {
+        Logger.info(`[l2-listener] block ${blockNumber}`);
         try {
             const block = await provider.getBlockWithTransactions(blockNumber);
             for (const tx of block.transactions) {
@@ -325,27 +334,47 @@ export async function startL2Listener(
                           l2_timestamp=excluded.l2_timestamp`
                     );
 
-                    upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
-                    console.log(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+            upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
+            Logger.info(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
                 }
             }
         } catch (e) {
-            console.error("[l2-listener] error", e);
+        Logger.error(`[l2-listener] error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         }
     });
 
-    console.log(`[l2-listener] started on ${rpcEndpoint}`);
+    Logger.info(`[l2-listener] started on ${rpcEndpoint}`);
+}
+
+// Unified entry
+export function startCrossChainListeners(opts: {
+    l1TargetHash: string;          // 20-byte hex without 0x
+    zmqEndpoint?: string;
+    l2Rpc: string;
+    moatAddress: string;
+    dbPath?: string;
+}) {
+    const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
+    const db = createTxDatabase(dbPath);
+    startL1Listener(db, zmqEndpoint, l1TargetHash).catch((e) =>
+        Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
+    );
+    startL2Listener(db, l2Rpc, moatAddress).catch((e) =>
+        Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
+    );
 }
 
 // Standalone execution
 if (require.main === module) {
-    const db = createTxDatabase();
-    startL1Listener(db).catch((err) => {
-        console.error("[doge-zmq] Error:", err);
-        process.exit(1);
-    });
-    startL2Listener(db, "https://rpc.dg.unifra.xyz", "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2").catch((err) => {
-        console.error("startL2Listener Error:", err);
-        process.exit(1);
-    });
+    startCrossChainListeners({
+        // This should be a 20-byte (40 hex chars) address hash without the '0x' prefix
+        // as per the logic in `parseTransactions`. The previous value was an
+        // incorrect 32-byte hash. Using a correct format placeholder.
+        // You should replace this with the actual target address hash.
+        l1TargetHash: "0000000000000000000000000000000000000000",
+        zmqEndpoint: "tcp://10.8.0.25:30495",
+        l2Rpc: "https://rpc.dg.unifra.xyz",
+        moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
+        dbPath: "doge_headers.db"
+    })
 }

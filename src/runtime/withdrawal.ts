@@ -11,7 +11,7 @@ import Logger from '../logger/logger';
 import { senderAccount } from './signer';
 import { parseUnits } from '@ethersproject/units';
 import bs58check from 'bs58check';
-import { startL1Listener,startL2Listener, createTxDatabase } from '../tools/crossChainListeners';
+import { startCrossChainListeners } from '../tools/crossChainListeners';
 import MoatABI from '../abi/moat';
 
 class WithdrawalRuntime {
@@ -46,10 +46,12 @@ class WithdrawalRuntime {
             try {
                 const decoded = bs58check.decode(this.targetAddress);
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
-                const db = createTxDatabase();
-                startL1Listener(db, undefined, hash20).catch(console.error);
-                Logger.info(`Dogecoin listener started with target hash ${hash20}`);
-                startL2Listener(db, this.url, this.moatContractAddress).catch(console.error);
+                startCrossChainListeners({
+                    l1TargetHash: hash20,
+                    zmqEndpoint: process.env.DOGE_ZMQ_ENDPOINT,
+                    l2Rpc: this.url,
+                    moatAddress: this.moatContractAddress,
+                });
                 
                 WithdrawalRuntime.listenerStarted = true;
             } catch (err) {
