@@ -204,6 +204,7 @@ export async function startL1Listener(
     zmqEndpoint: string,
     targetAddrHash: string = ""
 ) {
+    Logger.debug(`[l1-listener] startL1Listener zmqEndpoint: ${zmqEndpoint}, targetAddrHash: ${targetAddrHash}`);
     // previous db.exec moved to createTxDatabase, so assume db ready
     const insertStmt = db.prepare(
         `INSERT OR IGNORE INTO l1_headers (height, hash, version, prev_hash, merkle_root, timestamp, create_at, bits, nonce, size_bytes)
@@ -230,6 +231,7 @@ export async function startL1Listener(
     Logger.debug(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
     for await (const [_topic, message] of sock) {
+        Logger.debug(`[doge-zmq] Received rawblock message (${message.length} bytes)`);
         if (message.length < 80) {
             Logger.warn(`[doge-zmq] Received short rawblock message (${message.length} bytes), expected >= 80. Skipping.`);
             continue;
@@ -437,7 +439,7 @@ export async function startL2Listener(
 // Unified entry
 export function startCrossChainListeners(opts: {
     l1TargetHash: string;          // 20-byte hex without 0x
-    zmqEndpoint?: string;
+    zmqEndpoint: string;
     l2Rpc: string;
     moatAddress: string;
     dbPath?: string;
@@ -454,7 +456,7 @@ export function startCrossChainListeners(opts: {
         //324150000_0000000000
     }
 
-    const endpoint = zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT || "tcp://127.0.0.1:28332";
+    const endpoint = zmqEndpoint;
     startL1Listener(db, endpoint, l1TargetHash).catch((e) =>
         Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
     );

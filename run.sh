@@ -86,6 +86,7 @@ runWithDrawal(){
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
     --target-address "nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH" \
+    --doge-zmq-endpoint "tcp://10.8.0.25:30495" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
 

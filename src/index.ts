@@ -118,7 +118,7 @@ async function run() {
     let fixedGasPrice = null;
     const moatAddress = options.moatAddress;
     const targetAddress = options.targetAddress || '0x000000000000000000000000000000000000dead';
-    const dogeZmqEndpoint: string | undefined = options.dogeZmqEndpoint;
+    const dogeZmqEndpoint: string = options.dogeZmqEndpoint;
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');

@@ -26,7 +26,7 @@ class WithdrawalRuntime {
     fixedGasPrice: BigNumber | null;
     moatContractAddress: string;
     targetAddress: string;
-    zmqEndpoint?: string;
+    zmqEndpoint: string;
 
     constructor(
         mnemonic: string,
@@ -34,7 +34,7 @@ class WithdrawalRuntime {
         moatContractAddress: string,
         targetAddress: string,
         fixedGasPrice: BigNumber | null = null,
-        zmqEndpoint?: string
+        zmqEndpoint: string
     ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
@@ -176,7 +176,7 @@ class WithdrawalRuntime {
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
                 startCrossChainListeners({
                     l1TargetHash: hash20,
-                    zmqEndpoint: this.zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT,
+                    zmqEndpoint: this.zmqEndpoint,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
                     transactions: transactions.flat() as [TransactionRequest],
