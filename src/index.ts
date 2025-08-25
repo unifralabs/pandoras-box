@@ -83,6 +83,10 @@ async function run() {
             'L1 target address for withdrawToL1 in WITHDRAWAL mode'
         )
         .option(
+            '--doge-zmq-endpoint <endpoint>',
+            'Dogecoin ZMQ endpoint for L1 listener (e.g., tcp://127.0.0.1:28332)'
+        )
+        .option(
             '-o, --output <output-path>',
             'The output path for the results JSON'
         )
@@ -114,6 +118,7 @@ async function run() {
     let fixedGasPrice = null;
     const moatAddress = options.moatAddress;
     const targetAddress = options.targetAddress || '0x000000000000000000000000000000000000dead';
+    const dogeZmqEndpoint: string | undefined = options.dogeZmqEndpoint;
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
@@ -169,7 +174,14 @@ async function run() {
                 return;
             }
             //targetAddress 是这种格式: nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH
-            runtime = new WithdrawalRuntime(mnemonic, url, moatAddress, targetAddress, fixedGasPrice);
+            runtime = new WithdrawalRuntime(
+                mnemonic,
+                url,
+                moatAddress,
+                targetAddress,
+                fixedGasPrice,
+                dogeZmqEndpoint
+            );
             break;
         default:
             throw RuntimeErrors.errUnknownRuntime;

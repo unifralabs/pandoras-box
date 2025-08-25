@@ -190,7 +190,7 @@ export function createTxDatabase(dbPath = "doge_headers.db"): DB {
  */
 export async function startL1Listener(
     db: DB,
-    zmqEndpoint = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495",
+    zmqEndpoint: string,
     targetAddrHash: string = ""
 ) {
     // previous db.exec moved to createTxDatabase, so assume db ready
@@ -334,12 +334,12 @@ export async function startL2Listener(
                           l2_timestamp=excluded.l2_timestamp`
                     );
 
-            upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
-            Logger.info(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+                    upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
+                    Logger.info(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
                 }
             }
         } catch (e) {
-        Logger.error(`[l2-listener] error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+            Logger.error(`[l2-listener] error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         }
     });
 
@@ -356,7 +356,8 @@ export function startCrossChainListeners(opts: {
 }) {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
     const db = createTxDatabase(dbPath);
-    startL1Listener(db, zmqEndpoint, l1TargetHash).catch((e) =>
+    const endpoint = zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT || "tcp://127.0.0.1:28332";
+    startL1Listener(db, endpoint, l1TargetHash).catch((e) =>
         Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
     );
     startL2Listener(db, l2Rpc, moatAddress).catch((e) =>
@@ -367,10 +368,6 @@ export function startCrossChainListeners(opts: {
 // Standalone execution
 if (require.main === module) {
     startCrossChainListeners({
-        // This should be a 20-byte (40 hex chars) address hash without the '0x' prefix
-        // as per the logic in `parseTransactions`. The previous value was an
-        // incorrect 32-byte hash. Using a correct format placeholder.
-        // You should replace this with the actual target address hash.
         l1TargetHash: "0000000000000000000000000000000000000000",
         zmqEndpoint: "tcp://10.8.0.25:30495",
         l2Rpc: "https://rpc.dg.unifra.xyz",

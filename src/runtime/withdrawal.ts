@@ -26,13 +26,15 @@ class WithdrawalRuntime {
     fixedGasPrice: BigNumber | null;
     moatContractAddress: string;
     targetAddress: string;
+    zmqEndpoint?: string;
 
     constructor(
         mnemonic: string,
         url: string,
         moatContractAddress: string,
-        targetAddress: string,
-        fixedGasPrice: BigNumber | null = null
+    targetAddress: string,
+    fixedGasPrice: BigNumber | null = null,
+    zmqEndpoint?: string
     ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
@@ -40,6 +42,7 @@ class WithdrawalRuntime {
         this.moatContractAddress = moatContractAddress;
         this.targetAddress = targetAddress;
         this.fixedGasPrice = fixedGasPrice;
+    this.zmqEndpoint = zmqEndpoint;
 
         // start Dogecoin listener once
         if (!WithdrawalRuntime.listenerStarted) {
@@ -48,7 +51,7 @@ class WithdrawalRuntime {
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
                 startCrossChainListeners({
                     l1TargetHash: hash20,
-                    zmqEndpoint: process.env.DOGE_ZMQ_ENDPOINT,
+                    zmqEndpoint: this.zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
                 });
