@@ -72,12 +72,12 @@ interface VoutInfo {
     scriptHex: string;
     isP2PKH: boolean;
     addrHash?: string | null;
+    uid: bigint;
 }
 
 interface ParsedTx {
     hash: string;
     vouts: VoutInfo[];
-    uid: bigint
 }
 
 function isP2PKH(script: Buffer): boolean {
@@ -120,7 +120,7 @@ function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): Pa
         const [voutCnt, offVoutCnt] = readVarInt(block, offset);
         offset = offVoutCnt;
         const vouts: VoutInfo[] = [];
-        let uid: bigint = BigInt(0);
+
         for (let vo = 0; vo < voutCnt; vo++) {
             // value (8) little-endian satoshis
             const valueLE = block.readBigUInt64LE(offset);
@@ -131,14 +131,13 @@ function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): Pa
             offset += pkLen;
             const p2pkh = isP2PKH(script);
             let addrHash = p2pkh ? "" : script.subarray(3, 23).toString("hex");
-            if (addrHash === targetAddressHash) {
-                uid = valueLE;
-            }
+
             vouts.push({
                 value: valueLE,
                 scriptHex: script.toString("hex"),
                 isP2PKH: p2pkh,
                 addrHash: p2pkh ? addrHash : null,
+                uid: valueLE,
             });
         }
 
@@ -153,7 +152,7 @@ function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): Pa
             .digest()
             .reverse()
             .toString("hex");
-        txs.push({ hash: txHash, vouts, uid });
+        txs.push({ hash: txHash, vouts });
     }
     return txs;
 }
@@ -226,7 +225,7 @@ export async function startL1Listener(
         `UPDATE txs SET l1_txhash=@l1_txhash, l1_height=@l1_height, l1_timestamp=@l1_timestamp WHERE uid=@uid`
     );
 
-    const insertBlockData = db.transaction((header: any, txRows: { uid: number; l2_txhash: string; l2_height: number; l2_timestamp: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[]) => {
+    const insertBlockData = db.transaction((header: any, txRows: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[]) => {
         insertStmt.run(header);
         for (const row of txRows) updateTxStmt.run(row);
     });
@@ -243,8 +242,7 @@ export async function startL1Listener(
             Logger.warn(`[doge-zmq] Received short rawblock message (${message.length} bytes), expected >= 80. Skipping.`);
             continue;
         }
-        // The message payload is the raw block in binary form.
-        // Compute block hash (double SHA256 of header, displayed in little-endian).
+
         const header = message.subarray(0, 80);
         const hashBuffer = crypto
             .createHash("sha256")
@@ -252,7 +250,6 @@ export async function startL1Listener(
                 crypto.createHash("sha256").update(header).digest()
             )
             .digest();
-        // Reverse byte order for display (little-endian)
         const blockHash = Buffer.from(hashBuffer).reverse().toString("hex");
 
         const height = extractHeightFromBlock(message);
@@ -262,9 +259,7 @@ export async function startL1Listener(
         const parsedTxs = parseDogeCoinTransactions(message, targetAddrHash);
         const txHashes = parsedTxs.map((t) => t.hash);
 
-        // Store header if height known
         if (height !== null) {
-            // Parse header fields
             const version = message.readInt32LE(0);
             const prevHash = Buffer.from(message.subarray(4, 36)).reverse().toString("hex");
             const merkleRoot = Buffer.from(message.subarray(36, 68)).reverse().toString("hex");
@@ -286,16 +281,19 @@ export async function startL1Listener(
                 size_bytes: message.length,
             };
 
-            // Direct update - if uid doesn't exist, update will affect 0 rows
-            const rowsToUpdate = parsedTxs.map((ptx) => ({
-                uid: Number(ptx.uid),
-                l2_txhash: "",
-                l2_height: 0,
-                l2_timestamp: 0,
-                l1_txhash: ptx.hash,
-                l1_height: height,
-                l1_timestamp: nowTs,
-            }));
+            let rowsToUpdate = [];
+            for (const ptx of parsedTxs) {
+                for (const vout of ptx.vouts) {
+                    if (vout.addrHash === targetAddrHash) {
+                        rowsToUpdate.push({
+                            uid: Number(vout.uid),
+                            l1_txhash: ptx.hash,
+                            l1_height: height,
+                            l1_timestamp: nowTs,
+                        });
+                    }
+                }
+            }
             insertBlockData(headerRow, rowsToUpdate);
         }
 
@@ -349,7 +347,7 @@ export async function startL2Listener(
     let lastProcessed = latestTarget;
     let lastHash = await provider.getBlock(latestTarget).then((block: any) => block.hash);
     Logger.debug(`[l2-listener] lastProcessed,lastHash: ${lastProcessed},${lastHash}`);
-    
+
     // Get total transaction count for progress tracking
     const totalCount = db.prepare(`SELECT COUNT(*) as count FROM txs`).get() as { count: number };
     Logger.info(`[l2-listener] Starting with ${totalCount.count} total transactions to track`);
@@ -422,7 +420,7 @@ export async function startL2Listener(
                 }
 
                 for (const raw of block.transactions as any[]) {
-                    Logger.debug(`[l2] tx candidate: ${typeof raw === "string" ? raw : JSON.stringify({hash: raw.hash, to: raw.to, from: raw.from, value: raw.value})}`);
+                    Logger.debug(`[l2] tx candidate: ${typeof raw === "string" ? raw : JSON.stringify({ hash: raw.hash, to: raw.to, from: raw.from, value: raw.value })}`);
                     let tx: any;
                     if (typeof raw === "string") {
                         tx = await provider.getTransaction(raw);
@@ -431,7 +429,7 @@ export async function startL2Listener(
                     }
                     if (!tx) continue;
 
-                    
+
                     if (tx.to?.toLowerCase() !== moatLower) {
                         Logger.debug(`[l2] skipping tx ${tx.hash} (to: ${tx.to})`);
                         continue;
@@ -447,15 +445,15 @@ export async function startL2Listener(
                     for (const log of matchingLogs) {
                         const parsed = iface.parseLog({ topics: log.topics, data: log.data });
                         const amount: bigint = parsed.args.amount ?? parsed.args[2];
-                        const uidBig = (amount ) / BigInt(1e10);
-                        const uidNum = Number(uidBig);  
+                        const uidBig = (amount) / BigInt(1e10);
+                        const uidNum = Number(uidBig);
                         txsToUpdate.push({ uid: uidNum, tx: tx.hash, h: nextHeight, ts: block.timestamp });
                         Logger.debug(`[l2] updating uid ${uidNum} -> ${tx.hash}`);
                     }
                 }
 
                 db.transaction(() => {
-                    clearHeight.run(nextHeight); 
+                    clearHeight.run(nextHeight);
                     for (const txData of txsToUpdate) updateL2Tx.run(txData);
                     insertL2Header.run({ height: nextHeight, hash: block.hash, timestamp: block.timestamp, create_at: Math.floor(Date.now() / 1000) });
                 })();
@@ -463,7 +461,7 @@ export async function startL2Listener(
                 lastProcessed = nextHeight;
                 lastHash = block.hash;
                 Logger.debug(`[l2-listener] processed block ${nextHeight}`);
-                
+
                 if (txsToUpdate.length > 0) {
                     const completedCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NOT NULL AND l2_txhash != ''`).get() as { count: number };
                     progressBar.update(completedCount.count);
@@ -473,7 +471,7 @@ export async function startL2Listener(
                     const completedCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NOT NULL AND l2_txhash != ''`).get() as { count: number };
                     Logger.debug(`[l2] no updates in block ${nextHeight}, progress: ${completedCount.count}/${totalCount.count}`);
                 }
-                
+
                 const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NULL OR l2_txhash = ''`).get() as { count: number };
                 if (pendingCount.count === 0) {
                     progressBar.stop();
@@ -512,7 +510,7 @@ export function startCrossChainListeners(opts: {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
     const db = createTxDatabase(dbPath);
     // db.prepare(`DELETE FROM txs`).run();
-    
+
     for (const tx of opts.transactions) {
         if (!tx.value) continue;
         let uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
@@ -537,6 +535,6 @@ if (require.main === module) {
         l2Rpc: "https://rpc.dg.unifra.xyz",
         moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
         dbPath: "doge_headers.db",
-        transactions:[]
+        transactions: []
     });
 }
