@@ -6,6 +6,9 @@ type DB = InstanceType<typeof BetterSqlite3>;
 import { ethers } from "ethers";
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
+const { parseEther } = ethers.utils;
+
+type TransactionRequest = ethers.providers.TransactionRequest;
 import MoatABI from "../abi/moat";
 import Logger from "../logger/logger";
 
@@ -77,7 +80,7 @@ function isP2PKH(script: Buffer): boolean {
     );
 }
 
-function parseTransactions(block: Buffer, targetAddressHash: string): ParsedTx[] {
+function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): ParsedTx[] {
     const txs: ParsedTx[] = [];
     let offset = 80; // header
     const [txCount, off1] = readVarInt(block, offset);
@@ -179,6 +182,14 @@ export function createTxDatabase(dbPath = "doge_headers.db"): DB {
             l1_timestamp  INTEGER
         );`
     );
+    db.exec(
+        `CREATE TABLE IF NOT EXISTS l2_headers (
+            height      INTEGER PRIMARY KEY,
+            hash        TEXT    NOT NULL,
+            timestamp   INTEGER NOT NULL,
+            create_at   INTEGER NOT NULL
+        );`
+    );
     return db;
 }
 /**
@@ -216,7 +227,7 @@ export async function startL1Listener(
     sock.connect(zmqEndpoint);
     sock.subscribe("rawblock");
 
-    Logger.info(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
+    Logger.debug(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
     for await (const [_topic, message] of sock) {
         if (message.length < 80) {
@@ -239,7 +250,7 @@ export async function startL1Listener(
 
         const heightInfo = height !== null ? `height=${height}` : "height=unknown";
 
-        const parsedTxs = parseTransactions(message, targetAddrHash);
+        const parsedTxs = parseDogeCoinTransactions(message, targetAddrHash);
         const txHashes = parsedTxs.map((t) => t.hash);
 
         // Store header if height known
@@ -284,14 +295,9 @@ export async function startL1Listener(
             Logger.debug(`[doge-zmq] First tx ${firstTx.hash} vouts=${firstTx.vouts.length}`);
         }
 
-        Logger.info(
+        Logger.debug(
             `[doge-zmq] New block: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
         );
-
-        // Optional: print hashes or store as needed
-        // console.log(txHashes);
-        // 把区块头信息写入sqlite中，表名 l1_headers
-
     }
 }
 
@@ -309,41 +315,123 @@ export async function startL2Listener(
     const topic0 = iface.getEventTopic(wqEvent);
     const moatLower = moatAddress.toLowerCase();
 
-    provider.on("block", async (blockNumber: number) => {
-        Logger.info(`[l2-listener] block ${blockNumber}`);
+    // 1) Load last processed L2 state from our l2_headers table for robust reorg handling.
+    // const headerRow = db.prepare(`SELECT height, hash FROM l2_headers ORDER BY height DESC LIMIT 1`).get() as { height: number; hash: string } | undefined;
+    // let lastProcessed: number = headerRow?.height ?? 0;
+    // let lastHash: string | null = headerRow?.hash ?? null;
+
+    // 2) Prepare statements
+    const upsert = db.prepare(
+        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp)
+         VALUES (@uid,@tx,@h,@ts)
+         ON CONFLICT(uid) DO UPDATE SET
+          l2_txhash=excluded.l2_txhash,
+          l2_height=excluded.l2_height,
+          l2_timestamp=excluded.l2_timestamp`
+    );
+    const clearHeight = db.prepare(
+        `UPDATE txs SET l2_txhash=NULL, l2_height=NULL, l2_timestamp=NULL WHERE l2_height = ?`
+    );
+    const insertL2Header = db.prepare(
+        `INSERT OR REPLACE INTO l2_headers (height, hash, timestamp, create_at) VALUES (@height, @hash, @timestamp, @create_at)`
+    );
+    const deleteL2Header = db.prepare(
+        `DELETE FROM l2_headers WHERE height = ?`
+    );
+
+    // 3) Pump loop triggered by new heads; guarantees sequential processing
+    let latestTarget = await provider.getBlockNumber();
+    let pumping = false;
+    let lastProcessed = latestTarget;
+    let lastHash = await provider.getBlock(latestTarget).then((block: any) => block.hash);
+    Logger.debug(`[l2-listener] lastProcessed,lastHash: ${lastProcessed},${lastHash}`);
+
+    async function pump() {
+        if (pumping) return;
+        pumping = true;
         try {
-            const block = await provider.getBlockWithTransactions(blockNumber);
-            for (const tx of block.transactions) {
-                if (tx.to?.toLowerCase() !== moatLower) continue;
-                const receipt = await provider.getTransactionReceipt(tx.hash);
-                for (const log of receipt.logs) {
-                    if (log.address.toLowerCase() !== moatLower) continue;
-                    if (log.topics[0] !== topic0) continue;
+            while (lastProcessed < latestTarget) {
+                const nextHeight = lastProcessed + 1;
+                const block = await provider.getBlockWithTransactions(nextHeight);
+                if (!block) break; // wait for node to have the block
 
-                    const parsed = iface.parseLog(log);
-                    // amount is the third parameter (index 2) and not indexed
-                    const amount: bigint = parsed.args.amount ?? parsed.args[2];
-                    const uidNum = Number(amount);
+                // Reorg detection: parent of next must equal hash of lastProcessed
+                if (lastProcessed > 0 && lastHash && block.parentHash !== lastHash) {
+                    Logger.warn(`[l2-listener] reorg at ${nextHeight}: parent ${block.parentHash} != expected ${lastHash}. Rolling back ${lastProcessed}`);
+                    // In a reorg, the 'lastProcessed' block is now orphaned.
+                    // We must delete its header and clear its txs from our DB.
+                    const rollback = db.transaction((h: number) => {
+                        deleteL2Header.run(h);
+                        clearHeight.run(h);
+                    });
+                    rollback(lastProcessed);
 
-                    const upsert = db.prepare(
-                        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp)
-                         VALUES (@uid,@tx,@h,@ts)
-                         ON CONFLICT(uid) DO UPDATE SET
-                          l2_txhash=excluded.l2_txhash,
-                          l2_height=excluded.l2_height,
-                          l2_timestamp=excluded.l2_timestamp`
-                    );
+                    // Step back one block
+                    lastProcessed -= 1;
 
-                    upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
-                    Logger.info(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+                    // Reload the hash for the new 'lastProcessed' height from our DB.
+                    if (lastProcessed > 0) {
+                        const newLastHeader = db.prepare(`SELECT hash FROM l2_headers WHERE height = ?`).get(lastProcessed) as { hash: string } | undefined;
+                        lastHash = newLastHeader?.hash ?? null;
+                        // As a fallback if DB is somehow inconsistent, fetch from RPC.
+                        if (!lastHash) {
+                            const prev = await provider.getBlock(lastProcessed);
+                            lastHash = prev?.hash ?? null;
+                        }
+                    } else {
+                        lastHash = null;
+                    }
+                    continue; // try again with the new nextHeight
                 }
+
+                // Collect all data before committing to the database in a transaction.
+                // This avoids a critical bug in the original code where async calls
+                // were mixed inside a synchronous database transaction.
+                const txsToUpsert: { uid: number; tx: string; h: number; ts: number }[] = [];
+                for (const tx of block.transactions) {
+                    if (tx.to?.toLowerCase() !== moatLower) continue;
+                    const receipt = await provider.getTransactionReceipt(tx.hash);
+                    if (!receipt) continue;
+                    for (const log of receipt.logs) {
+                        if (log.address.toLowerCase() !== moatLower) continue;
+                        if (log.topics[0] !== topic0) continue;
+
+                        const parsed = iface.parseLog(log);
+                        const amount: bigint = parsed.args.amount ?? parsed.args[2];
+                        const uidNum = Number(amount) / 1e10;
+                        
+                        txsToUpsert.push({ uid: uidNum, tx: tx.hash, h: nextHeight, ts: block.timestamp });
+                        Logger.debug(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+                    }
+                }
+
+                // Atomically save all data for this block.
+                db.transaction(() => {
+                    clearHeight.run(nextHeight); // Clear any stale data for this height
+                    for (const txData of txsToUpsert) upsert.run(txData);
+                    insertL2Header.run({ height: nextHeight, hash: block.hash, timestamp: block.timestamp, create_at: Math.floor(Date.now() / 1000) });
+                })();
+
+                lastProcessed = nextHeight;
+                lastHash = block.hash;
+                Logger.debug(`[l2-listener] processed block ${nextHeight}`);
             }
         } catch (e) {
-            Logger.error(`[l2-listener] error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+            Logger.error(`[l2-listener] pump error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+        } finally {
+            pumping = false;
         }
+    }
+
+    provider.on("block", async (bn: number) => {
+        latestTarget = Math.max(latestTarget, bn);
+        await pump();
     });
 
-    Logger.info(`[l2-listener] started on ${rpcEndpoint}`);
+    // Kick off once at startup to catch up to current head
+    await pump();
+
+    Logger.debug(`[l2-listener] started on ${rpcEndpoint}`);
 }
 
 // Unified entry
@@ -353,9 +441,19 @@ export function startCrossChainListeners(opts: {
     l2Rpc: string;
     moatAddress: string;
     dbPath?: string;
+    transactions: [TransactionRequest]
 }) {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
     const db = createTxDatabase(dbPath);
+    db.prepare(`DELETE FROM txs`).run();
+    
+    for (const tx of opts.transactions) {
+        if (!tx.value) continue;
+        let uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
+        db.prepare(`INSERT INTO txs (uid) VALUES (@uid)`).run({ uid });
+        //324150000_0000000000
+    }
+
     const endpoint = zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT || "tcp://127.0.0.1:28332";
     startL1Listener(db, endpoint, l1TargetHash).catch((e) =>
         Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
@@ -367,11 +465,12 @@ export function startCrossChainListeners(opts: {
 
 // Standalone execution
 if (require.main === module) {
-    startCrossChainListeners({
-        l1TargetHash: "0000000000000000000000000000000000000000",
-        zmqEndpoint: "tcp://10.8.0.25:30495",
-        l2Rpc: "https://rpc.dg.unifra.xyz",
-        moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
-        dbPath: "doge_headers.db"
-    })
+    // startCrossChainListeners({
+    //     l1TargetHash: "0000000000000000000000000000000000000000",
+    //     zmqEndpoint: "tcp://10.8.0.25:30495",
+    //     l2Rpc: "https://rpc.dg.unifra.xyz",
+    //     moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
+    //     dbPath: "doge_headers.db",
+    //     transactions:[]
+    // })
 }

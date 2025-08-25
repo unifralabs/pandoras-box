@@ -32,9 +32,9 @@ class WithdrawalRuntime {
         mnemonic: string,
         url: string,
         moatContractAddress: string,
-    targetAddress: string,
-    fixedGasPrice: BigNumber | null = null,
-    zmqEndpoint?: string
+        targetAddress: string,
+        fixedGasPrice: BigNumber | null = null,
+        zmqEndpoint?: string
     ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
@@ -42,25 +42,7 @@ class WithdrawalRuntime {
         this.moatContractAddress = moatContractAddress;
         this.targetAddress = targetAddress;
         this.fixedGasPrice = fixedGasPrice;
-    this.zmqEndpoint = zmqEndpoint;
-
-        // start Dogecoin listener once
-        if (!WithdrawalRuntime.listenerStarted) {
-            try {
-                const decoded = bs58check.decode(this.targetAddress);
-                const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
-                startCrossChainListeners({
-                    l1TargetHash: hash20,
-                    zmqEndpoint: this.zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT,
-                    l2Rpc: this.url,
-                    moatAddress: this.moatContractAddress,
-                });
-                
-                WithdrawalRuntime.listenerStarted = true;
-            } catch (err) {
-                Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
-            }
-        }
+        this.zmqEndpoint = zmqEndpoint;
     }
 
     private static listenerStarted = false;
@@ -188,12 +170,28 @@ class WithdrawalRuntime {
 
         constructBar.stop();
         Logger.success(`Successfully constructed ${numTx} transactions`);
+        if (!WithdrawalRuntime.listenerStarted) {
+            try {
+                const decoded = bs58check.decode(this.targetAddress);
+                const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
+                startCrossChainListeners({
+                    l1TargetHash: hash20,
+                    zmqEndpoint: this.zmqEndpoint || process.env.DOGE_ZMQ_ENDPOINT,
+                    l2Rpc: this.url,
+                    moatAddress: this.moatContractAddress,
+                    transactions: transactions.flat() as [TransactionRequest],
+                });
 
+                WithdrawalRuntime.listenerStarted = true;
+            } catch (err) {
+                Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
+            }
+        }
         return transactions;
     }
 
     GetStartMessage(): string {
-        return '\n⚡️ EOA to EOA transfers initialized ️⚡️\n';
+        return '\n⚡️ withdrawal transfers initialized ️⚡️\n';
     }
 }
 

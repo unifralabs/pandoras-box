@@ -2,7 +2,7 @@
 
 yarn build
 rm -rf out/out/pandoras-box.log
-transactions=1
+transactions=10
 batch=1
 subaccounts=1
 concurrency=1
@@ -76,6 +76,7 @@ runERC721()
 
 MOAT_CONTRACT=0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2
 runWithDrawal(){
+    export LOG_LEVEL=DEBUG
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
     --fixed-gas-price \
     -t $transactions \

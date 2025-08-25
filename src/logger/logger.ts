@@ -5,6 +5,14 @@ import path from 'path';
 class Logger {
     private static logFilePath: string = process.env.LOG_FILE_PATH || path.join('out', 'pandoras-box.log');
     private static initialized = false;
+    private static logLevel: string = process.env.LOG_LEVEL || 'INFO';
+    
+    private static shouldLog(level: string): boolean {
+        const levels = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+        const currentLevelIndex = levels.indexOf(Logger.logLevel.toUpperCase());
+        const messageLevelIndex = levels.indexOf(level.toUpperCase());
+        return messageLevelIndex >= currentLevelIndex;
+    }
 
     private static ensureFile() {
         if (Logger.initialized) return;
@@ -38,32 +46,37 @@ class Logger {
     }
 
     static info(s: string) {
-        console.log(s);
+        if (!Logger.shouldLog('INFO')) return;
         Logger.writeToFile('INFO', s);
     }
 
     static title(s: string) {
+        if (!Logger.shouldLog('INFO')) return;
         console.log(chalk.blue(s));
         Logger.writeToFile('TITLE', s);
     }
 
     static warn(s: string) {
-        // warn: file only
+        if (!Logger.shouldLog('WARN')) return;
+
         Logger.writeToFile('WARN', s);
     }
 
     static success(s: string) {
+        if (!Logger.shouldLog('INFO')) return;
         console.log(chalk.green(`✅ ${s}`));
         Logger.writeToFile('SUCCESS', s);
     }
 
     static error(s: string) {
-        // error: file only
+        if (!Logger.shouldLog('ERROR')) return;
+
         Logger.writeToFile('ERROR', s);
     }
 
     static debug(s: string) {
-        // debug: file only
+        if (!Logger.shouldLog('DEBUG')) return;
+        
         Logger.writeToFile('DEBUG', s);
     }
 }
