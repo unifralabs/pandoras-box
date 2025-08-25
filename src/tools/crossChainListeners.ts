@@ -4,11 +4,22 @@ import axios from "axios";
 import BetterSqlite3 from "better-sqlite3";
 type DB = InstanceType<typeof BetterSqlite3>;
 import { ethers } from "ethers";
+import cliProgress from "cli-progress";
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
-const { parseEther } = ethers.utils;
+const parseEther = (ethers as any).utils?.parseEther || ((value: string) => {
+    // Convert "0.1" to "100000000000000000" (0.1 ETH in wei)
+    const parts = value.split('.');
+    if (parts.length === 1) {
+        return BigInt(value + '000000000000000000');
+    } else {
+        const whole = parts[0];
+        const decimal = parts[1].padEnd(18, '0').substring(0, 18);
+        return BigInt(whole + decimal);
+    }
+});
 
-type TransactionRequest = ethers.providers.TransactionRequest;
+type TransactionRequest = any;
 import MoatABI from "../abi/moat";
 import Logger from "../logger/logger";
 
@@ -305,13 +316,12 @@ export async function startL2Listener(
     db: DB,
     rpcEndpoint: string,
     moatAddress: string
-) {
-    const provider = new providers.JsonRpcProvider(rpcEndpoint as any);
+): Promise<void> {
+    const provider = new (ethers as any).JsonRpcProvider(rpcEndpoint as any);
     provider.pollingInterval = 500;
 
     const iface = new Interface(MoatABI);
-    const wqEvent = iface.getEvent("WithdrawalQueued");
-    const topic0 = iface.getEventTopic(wqEvent);
+    const topic0 = iface.getEvent("WithdrawalQueued").topicHash;
     const moatLower = moatAddress.toLowerCase();
 
     // 1) Load last processed L2 state from our l2_headers table for robust reorg handling.
@@ -339,6 +349,25 @@ export async function startL2Listener(
     let lastProcessed = latestTarget;
     let lastHash = await provider.getBlock(latestTarget).then((block: any) => block.hash);
     Logger.debug(`[l2-listener] lastProcessed,lastHash: ${lastProcessed},${lastHash}`);
+    
+    // Get total transaction count for progress tracking
+    const totalCount = db.prepare(`SELECT COUNT(*) as count FROM txs`).get() as { count: number };
+    Logger.info(`[l2-listener] Starting with ${totalCount.count} total transactions to track`);
+
+    // Create progress bar
+    const progressBar = new cliProgress.SingleBar({
+        format: '[L2] Progress |{bar}| {percentage}% | {value}/{total} tx',
+        barCompleteChar: '█',
+        barIncompleteChar: '░',
+        hideCursor: true,
+        stopOnComplete: false,   // keep the bar visible after completion
+        clearOnComplete: false,  // do not clear the bar so user can see final state
+        stream: process.stderr,  // use stderr so it doesn't clash with other stdout bars
+        linewrap: true,          // keep bar on its own line
+        noTTYOutput: true        // force rendering even if TTY detection fails
+    });
+    progressBar.start(totalCount.count, 0);
+    progressBar.render(); // render immediately
 
     async function pump() {
         if (pumping) return;
@@ -346,7 +375,7 @@ export async function startL2Listener(
         try {
             while (lastProcessed < latestTarget) {
                 const nextHeight = lastProcessed + 1;
-                const block = await provider.getBlockWithTransactions(nextHeight);
+                const block = await provider.getBlock(nextHeight, true);
                 if (!block) break; // wait for node to have the block
 
                 // Reorg detection: parent of next must equal hash of lastProcessed
@@ -378,31 +407,55 @@ export async function startL2Listener(
                     continue; // try again with the new nextHeight
                 }
 
-                // Collect all data before committing to the database in a transaction.
-                // This avoids a critical bug in the original code where async calls
-                // were mixed inside a synchronous database transaction.
                 const txsToUpdate: { uid: number; tx: string; h: number; ts: number }[] = [];
-                for (const tx of block.transactions) {
-                    if (tx.to?.toLowerCase() !== moatLower) continue;
-                    const receipt = await provider.getTransactionReceipt(tx.hash);
-                    if (!receipt) continue;
-                    for (const log of receipt.logs) {
-                        if (log.address.toLowerCase() !== moatLower) continue;
-                        if (log.topics[0] !== topic0) continue;
+                Logger.debug(`[l2] processing block ${nextHeight} with ${block.transactions.length} transactions`);
 
-                        const parsed = iface.parseLog(log);
+                let receiptMap: Record<string, any> = {};
+                try {
+                    const receipts: any[] = await provider.send("eth_getBlockReceipts", [block.hash]);
+                    if (Array.isArray(receipts)) {
+                        for (const r of receipts) receiptMap[(r.transactionHash as string).toLowerCase()] = r;
+                        Logger.debug(`[l2] fetched ${receipts.length} receipts via eth_getBlockReceipts`);
+                    }
+                } catch (e) {
+                    // node may not support; silently fallback
+                }
+
+                for (const raw of block.transactions as any[]) {
+                    Logger.debug(`[l2] tx candidate: ${typeof raw === "string" ? raw : JSON.stringify({hash: raw.hash, to: raw.to, from: raw.from, value: raw.value})}`);
+                    let tx: any;
+                    if (typeof raw === "string") {
+                        tx = await provider.getTransaction(raw);
+                    } else {
+                        tx = raw;
+                    }
+                    if (!tx) continue;
+
+                    
+                    if (tx.to?.toLowerCase() !== moatLower) {
+                        Logger.debug(`[l2] skipping tx ${tx.hash} (to: ${tx.to})`);
+                        continue;
+                    }
+                    Logger.debug(`[l2] found moat tx ${tx.hash}`);
+                    // obtain receipt: from map or rpc
+                    let receipt = receiptMap[tx.hash.toLowerCase()];
+                    if (!receipt) continue; // if not in map, skip (node should support batch receipts)
+
+                    const matchingLogs = receipt.logs.filter((l: any) => l.address.toLowerCase() === moatLower && l.topics[0] === topic0);
+                    if (matchingLogs.length === 0) continue;
+
+                    for (const log of matchingLogs) {
+                        const parsed = iface.parseLog({ topics: log.topics, data: log.data });
                         const amount: bigint = parsed.args.amount ?? parsed.args[2];
-                        const uidNum = Number(amount) / 1e10;
-                        
-                        // Direct update - if uid doesn't exist, update will affect 0 rows
+                        const uidBig = (amount ) / BigInt(1e10);
+                        const uidNum = Number(uidBig);  
                         txsToUpdate.push({ uid: uidNum, tx: tx.hash, h: nextHeight, ts: block.timestamp });
                         Logger.debug(`[l2] updating uid ${uidNum} -> ${tx.hash}`);
                     }
                 }
 
-                // Atomically save all data for this block.
                 db.transaction(() => {
-                    clearHeight.run(nextHeight); // Clear any stale data for this height
+                    clearHeight.run(nextHeight); 
                     for (const txData of txsToUpdate) updateL2Tx.run(txData);
                     insertL2Header.run({ height: nextHeight, hash: block.hash, timestamp: block.timestamp, create_at: Math.floor(Date.now() / 1000) });
                 })();
@@ -410,6 +463,24 @@ export async function startL2Listener(
                 lastProcessed = nextHeight;
                 lastHash = block.hash;
                 Logger.debug(`[l2-listener] processed block ${nextHeight}`);
+                
+                if (txsToUpdate.length > 0) {
+                    const completedCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NOT NULL AND l2_txhash != ''`).get() as { count: number };
+                    progressBar.update(completedCount.count);
+                    Logger.debug(`[l2] updated ${txsToUpdate.length} transactions, progress: ${completedCount.count}/${totalCount.count}`);
+                } else {
+                    progressBar.render();
+                    const completedCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NOT NULL AND l2_txhash != ''`).get() as { count: number };
+                    Logger.debug(`[l2] no updates in block ${nextHeight}, progress: ${completedCount.count}/${totalCount.count}`);
+                }
+                
+                const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NULL OR l2_txhash = ''`).get() as { count: number };
+                if (pendingCount.count === 0) {
+                    progressBar.stop();
+                    Logger.info(`[l2-listener] All transactions have L2 information. Stopping L2 listener.`);
+                    provider.removeAllListeners();
+                    return;
+                }
             }
         } catch (e) {
             Logger.error(`[l2-listener] pump error ${e instanceof Error ? e.stack || e.message : String(e)}`);

@@ -2,10 +2,10 @@
 
 yarn build
 rm -rf out/out/pandoras-box.log
-transactions=10
-batch=1
-subaccounts=1
-concurrency=1
+transactions=400
+batch=4
+subaccounts=10
+concurrency=3
 
 RPC="https://rpc.dg.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
