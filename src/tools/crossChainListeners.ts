@@ -2,6 +2,10 @@ import { Subscriber } from "zeromq";
 import crypto from "crypto";
 import axios from "axios";
 import Database from "better-sqlite3";
+import { ethers } from "ethers";
+const { utils, providers } = ethers as any;
+const Interface = (utils && utils.Interface) || (ethers as any).Interface;
+import MoatABI from "../abi/moat";
 
 /** Decode Bitcoin-style VarInt. Returns [value, newOffset] */
 function readVarInt(buf: Buffer, offset: number): [number, number] {
@@ -176,7 +180,7 @@ export function createTxDatabase(dbPath = "doge_headers.db"): Database {
     return db;
 }
 
-export async function startDogecoinListener(
+export async function startL1Listener(
     db: Database,
     zmqEndpoint = process.env.DOGE_ZMQ_ENDPOINT || "tcp://10.8.0.25:30495",
     targetAddrHash: string = ""
@@ -286,19 +290,62 @@ export async function startDogecoinListener(
 // L2 listener placeholder (e.g., for EVM chain via WebSocket)
 export async function startL2Listener(
     db: Database,
-    wsEndpoint: string,
-    targetAddr: string
+    rpcEndpoint: string,
+    moatAddress: string
 ) {
-    // TODO: implement actual L2 subscription logic.
-    // Example: using ethers WebSocketProvider to listen for transactions to target address,
-    // then update txs table filling l2_* columns where uid matches.
+    const provider = new providers.JsonRpcProvider(rpcEndpoint as any);
+    provider.pollingInterval = 1_000;
+
+    const iface = new Interface(MoatABI);
+    const wqEvent = iface.getEvent("WithdrawalQueued");
+    const topic0 = iface.getEventTopic(wqEvent);
+    const moatLower = moatAddress.toLowerCase();
+
+    provider.on("block", async (blockNumber: number) => {
+        try {
+            const block = await provider.getBlockWithTransactions(blockNumber);
+            for (const tx of block.transactions) {
+                if (tx.to?.toLowerCase() !== moatLower) continue;
+                const receipt = await provider.getTransactionReceipt(tx.hash);
+                for (const log of receipt.logs) {
+                    if (log.address.toLowerCase() !== moatLower) continue;
+                    if (log.topics[0] !== topic0) continue;
+
+                    const parsed = iface.parseLog(log);
+                    // amount is the third parameter (index 2) and not indexed
+                    const amount: bigint = parsed.args.amount ?? parsed.args[2];
+                    const uidNum = Number(amount);
+
+                    const upsert = db.prepare(
+                        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp)
+                         VALUES (@uid,@tx,@h,@ts)
+                         ON CONFLICT(uid) DO UPDATE SET
+                          l2_txhash=excluded.l2_txhash,
+                          l2_height=excluded.l2_height,
+                          l2_timestamp=excluded.l2_timestamp`
+                    );
+
+                    upsert.run({ uid: uidNum, tx: tx.hash, h: blockNumber, ts: block.timestamp });
+                    console.log(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+                }
+            }
+        } catch (e) {
+            console.error("[l2-listener] error", e);
+        }
+    });
+
+    console.log(`[l2-listener] started on ${rpcEndpoint}`);
 }
 
 // Standalone execution
 if (require.main === module) {
     const db = createTxDatabase();
-    startDogecoinListener(db).catch((err) => {
+    startL1Listener(db).catch((err) => {
         console.error("[doge-zmq] Error:", err);
+        process.exit(1);
+    });
+    startL2Listener(db, "https://rpc.dg.unifra.xyz", "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2").catch((err) => {
+        console.error("startL2Listener Error:", err);
         process.exit(1);
     });
 }

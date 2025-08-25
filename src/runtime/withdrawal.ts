@@ -11,66 +11,8 @@ import Logger from '../logger/logger';
 import { senderAccount } from './signer';
 import { parseUnits } from '@ethersproject/units';
 import bs58check from 'bs58check';
-import { startDogecoinListener, createTxDatabase } from '../tools/dogecoinZmqTest';
-
-const MoatABI = [
-    {
-        inputs: [{ internalType: 'address', name: '_target', type: 'address' }],
-        name: 'withdrawToL1',
-        outputs: [],
-        stateMutability: 'payable',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'minWithdrawalAmount',
-        outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'withdrawalFee',
-        outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'messenger',
-        outputs: [{ internalType: 'address', name: '', type: 'address' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'basculeVerifier',
-        outputs: [{ internalType: 'address', name: '', type: 'address' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'depositFee',
-        outputs: [{ internalType: 'uint256', name: '', type: 'uint256' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'feeRecipient',
-        outputs: [{ internalType: 'address', name: '', type: 'address' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-    {
-        inputs: [],
-        name: 'owner',
-        outputs: [{ internalType: 'address', name: '', type: 'address' }],
-        stateMutability: 'view',
-        type: 'function',
-    },
-];
+import { startL1Listener,startL2Listener, createTxDatabase } from '../tools/crossChainListeners';
+import MoatABI from '../abi/moat';
 
 class WithdrawalRuntime {
     mnemonic: string;
@@ -105,8 +47,10 @@ class WithdrawalRuntime {
                 const decoded = bs58check.decode(this.targetAddress);
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
                 const db = createTxDatabase();
-                startDogecoinListener(db, undefined, hash20).catch(console.error);
+                startL1Listener(db, undefined, hash20).catch(console.error);
                 Logger.info(`Dogecoin listener started with target hash ${hash20}`);
+                startL2Listener(db, this.url, this.moatContractAddress).catch(console.error);
+                
                 WithdrawalRuntime.listenerStarted = true;
             } catch (err) {
                 Logger.error(`Failed to decode target address ${this.targetAddress}: ${err}`);
