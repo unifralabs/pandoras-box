@@ -76,6 +76,7 @@ runERC721()
 
 MOAT_CONTRACT=0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2
 runWithDrawal(){
+    rm -rf doge_headers.db
     export LOG_LEVEL=DEBUG
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
     --fixed-gas-price \

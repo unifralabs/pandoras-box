@@ -211,17 +211,13 @@ export async function startL1Listener(
          VALUES (@height, @hash, @version, @prev_hash, @merkle_root, @timestamp, @create_at, @bits, @nonce, @size_bytes)`
     );
 
-    const insertTxStmt = db.prepare(
-        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp, l1_txhash, l1_height, l1_timestamp)
-         VALUES (@uid, @l2_txhash, @l2_height, @l2_timestamp, @l1_txhash, @l1_height, @l1_timestamp)
-         ON CONFLICT(uid) DO UPDATE SET
-           l1_txhash=excluded.l1_txhash,
-           l1_height=excluded.l1_height,
-           l1_timestamp=excluded.l1_timestamp`);
+    const updateTxStmt = db.prepare(
+        `UPDATE txs SET l1_txhash=@l1_txhash, l1_height=@l1_height, l1_timestamp=@l1_timestamp WHERE uid=@uid`
+    );
 
     const insertBlockData = db.transaction((header: any, txRows: { uid: number; l2_txhash: string; l2_height: number; l2_timestamp: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[]) => {
         insertStmt.run(header);
-        for (const row of txRows) insertTxStmt.run(row);
+        for (const row of txRows) updateTxStmt.run(row);
     });
 
     const sock = new Subscriber();
@@ -279,7 +275,8 @@ export async function startL1Listener(
                 size_bytes: message.length,
             };
 
-            const rows = parsedTxs.map((ptx) => ({
+            // Direct update - if uid doesn't exist, update will affect 0 rows
+            const rowsToUpdate = parsedTxs.map((ptx) => ({
                 uid: Number(ptx.uid),
                 l2_txhash: "",
                 l2_height: 0,
@@ -288,7 +285,7 @@ export async function startL1Listener(
                 l1_height: height,
                 l1_timestamp: nowTs,
             }));
-            insertBlockData(headerRow, rows);
+            insertBlockData(headerRow, rowsToUpdate);
         }
 
         // Example log of first tx vouts
@@ -310,7 +307,7 @@ export async function startL2Listener(
     moatAddress: string
 ) {
     const provider = new providers.JsonRpcProvider(rpcEndpoint as any);
-    provider.pollingInterval = 1_000;
+    provider.pollingInterval = 500;
 
     const iface = new Interface(MoatABI);
     const wqEvent = iface.getEvent("WithdrawalQueued");
@@ -323,13 +320,8 @@ export async function startL2Listener(
     // let lastHash: string | null = headerRow?.hash ?? null;
 
     // 2) Prepare statements
-    const upsert = db.prepare(
-        `INSERT INTO txs (uid, l2_txhash, l2_height, l2_timestamp)
-         VALUES (@uid,@tx,@h,@ts)
-         ON CONFLICT(uid) DO UPDATE SET
-          l2_txhash=excluded.l2_txhash,
-          l2_height=excluded.l2_height,
-          l2_timestamp=excluded.l2_timestamp`
+    const updateL2Tx = db.prepare(
+        `UPDATE txs SET l2_txhash=@tx, l2_height=@h, l2_timestamp=@ts WHERE uid=@uid`
     );
     const clearHeight = db.prepare(
         `UPDATE txs SET l2_txhash=NULL, l2_height=NULL, l2_timestamp=NULL WHERE l2_height = ?`
@@ -389,7 +381,7 @@ export async function startL2Listener(
                 // Collect all data before committing to the database in a transaction.
                 // This avoids a critical bug in the original code where async calls
                 // were mixed inside a synchronous database transaction.
-                const txsToUpsert: { uid: number; tx: string; h: number; ts: number }[] = [];
+                const txsToUpdate: { uid: number; tx: string; h: number; ts: number }[] = [];
                 for (const tx of block.transactions) {
                     if (tx.to?.toLowerCase() !== moatLower) continue;
                     const receipt = await provider.getTransactionReceipt(tx.hash);
@@ -402,15 +394,16 @@ export async function startL2Listener(
                         const amount: bigint = parsed.args.amount ?? parsed.args[2];
                         const uidNum = Number(amount) / 1e10;
                         
-                        txsToUpsert.push({ uid: uidNum, tx: tx.hash, h: nextHeight, ts: block.timestamp });
-                        Logger.debug(`[l2] mapped uid ${uidNum} -> ${tx.hash}`);
+                        // Direct update - if uid doesn't exist, update will affect 0 rows
+                        txsToUpdate.push({ uid: uidNum, tx: tx.hash, h: nextHeight, ts: block.timestamp });
+                        Logger.debug(`[l2] updating uid ${uidNum} -> ${tx.hash}`);
                     }
                 }
 
                 // Atomically save all data for this block.
                 db.transaction(() => {
                     clearHeight.run(nextHeight); // Clear any stale data for this height
-                    for (const txData of txsToUpsert) upsert.run(txData);
+                    for (const txData of txsToUpdate) updateL2Tx.run(txData);
                     insertL2Header.run({ height: nextHeight, hash: block.hash, timestamp: block.timestamp, create_at: Math.floor(Date.now() / 1000) });
                 })();
 
@@ -443,11 +436,11 @@ export function startCrossChainListeners(opts: {
     l2Rpc: string;
     moatAddress: string;
     dbPath?: string;
-    transactions: [TransactionRequest]
+    transactions: TransactionRequest[]
 }) {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
     const db = createTxDatabase(dbPath);
-    db.prepare(`DELETE FROM txs`).run();
+    // db.prepare(`DELETE FROM txs`).run();
     
     for (const tx of opts.transactions) {
         if (!tx.value) continue;
@@ -467,12 +460,12 @@ export function startCrossChainListeners(opts: {
 
 // Standalone execution
 if (require.main === module) {
-    // startCrossChainListeners({
-    //     l1TargetHash: "0000000000000000000000000000000000000000",
-    //     zmqEndpoint: "tcp://10.8.0.25:30495",
-    //     l2Rpc: "https://rpc.dg.unifra.xyz",
-    //     moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
-    //     dbPath: "doge_headers.db",
-    //     transactions:[]
-    // })
+    startCrossChainListeners({
+        l1TargetHash: "0000000000000000000000000000000000000000",
+        zmqEndpoint: "tcp://10.8.0.25:30495",
+        l2Rpc: "https://rpc.dg.unifra.xyz",
+        moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
+        dbPath: "doge_headers.db",
+        transactions:[]
+    });
 }
