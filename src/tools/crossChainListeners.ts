@@ -5,6 +5,7 @@ import BetterSqlite3 from "better-sqlite3";
 type DB = InstanceType<typeof BetterSqlite3>;
 import { ethers } from "ethers";
 import cliProgress from "cli-progress";
+import Table from "cli-table3";
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
 const parseEther = (ethers as any).utils?.parseEther || ((value: string) => {
@@ -236,6 +237,17 @@ export async function startL1Listener(
 
     Logger.debug(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
+    // Check if there are any transactions lacking L1 information. If none, we can skip starting the listener entirely.
+    const remainingL1Stmt = db.prepare(
+        `SELECT COUNT(*) as cnt FROM txs WHERE l1_txhash IS NULL`
+    );
+
+    let remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
+    if (remainingL1 === 0) {
+        Logger.info('[l1-listener] All transactions already have L1 info. Listener will not start.');
+        return;
+    }
+
     for await (const [_topic, message] of sock) {
         Logger.debug(`[doge-zmq] Received rawblock message (${message.length} bytes)`);
         if (message.length < 80) {
@@ -295,6 +307,18 @@ export async function startL1Listener(
                 }
             }
             insertBlockData(headerRow, rowsToUpdate);
+
+            // After inserting/updating, check again if all transactions now have L1 info.
+            remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
+            if (remainingL1 === 0) {
+                Logger.info('[l1-listener] All transactions have obtained L1 info. Stopping listener.');
+                // Gracefully close socket before exiting loop (zeromq@6 has close())
+                const maybeClose = (sock as any).close;
+                if (typeof maybeClose === 'function') {
+                    try { maybeClose.call(sock); } catch (_) { /* ignore */ }
+                }
+                break; // exit the for-await loop
+            }
         }
 
         // Example log of first tx vouts
@@ -322,12 +346,6 @@ export async function startL2Listener(
     const topic0 = iface.getEvent("WithdrawalQueued").topicHash;
     const moatLower = moatAddress.toLowerCase();
 
-    // 1) Load last processed L2 state from our l2_headers table for robust reorg handling.
-    // const headerRow = db.prepare(`SELECT height, hash FROM l2_headers ORDER BY height DESC LIMIT 1`).get() as { height: number; hash: string } | undefined;
-    // let lastProcessed: number = headerRow?.height ?? 0;
-    // let lastHash: string | null = headerRow?.hash ?? null;
-
-    // 2) Prepare statements
     const updateL2Tx = db.prepare(
         `UPDATE txs SET l2_txhash=@tx, l2_height=@h, l2_timestamp=@ts WHERE uid=@uid`
     );
@@ -506,7 +524,7 @@ export function startCrossChainListeners(opts: {
     moatAddress: string;
     dbPath?: string;
     transactions: TransactionRequest[]
-}) {
+}): Promise<void> {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
     const db = createTxDatabase(dbPath);
     // db.prepare(`DELETE FROM txs`).run();
@@ -519,22 +537,123 @@ export function startCrossChainListeners(opts: {
     }
 
     const endpoint = zmqEndpoint;
-    startL1Listener(db, endpoint, l1TargetHash).catch((e) =>
-        Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
-    );
-    startL2Listener(db, l2Rpc, moatAddress).catch((e) =>
-        Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`)
-    );
+    const l1Promise = startL1Listener(db, endpoint, l1TargetHash).catch((e) => {
+        Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+        throw e;
+    });
+    const l2Promise = startL2Listener(db, l2Rpc, moatAddress).catch((e) => {
+        Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+        throw e;
+    });
+
+    return Promise.all([l1Promise, l2Promise]).then(() => {
+        Logger.info('[cross-chain] Both listeners finished. Executing statistic().');
+        statistic(db);
+    });
+}
+
+export function statistic(_db: DB): void {
+    type Layer = 'l1' | 'l2';
+
+    function percentile(sortedArr: number[], p: number): number {
+        if (sortedArr.length === 0) return 0;
+        const idx = (p / 100) * (sortedArr.length - 1);
+        const lower = Math.floor(idx);
+        const upper = Math.ceil(idx);
+        if (lower === upper) return sortedArr[lower];
+        const weight = idx - lower;
+        return sortedArr[lower] * (1 - weight) + sortedArr[upper] * weight;
+    }
+
+    function printDelayTable(delays: number[]) {
+        const table = new Table({ head: ["Metric", "Seconds"] });
+        delays.sort((a, b) => a - b);
+        const avg = delays.reduce((a,b)=>a+b,0)/delays.length;
+        table.push(
+            ["Max", delays[delays.length - 1] ?? "N/A"],
+            ["Min", delays[0] ?? "N/A"],
+            ["Avg", avg.toFixed(2)],
+            ["Median", percentile(delays, 50)],
+            ["P95", percentile(delays, 95)],
+            ["P99", percentile(delays, 99)]
+        );
+        Logger.info("\nDelay Statistics (L2 → L1):\n" + table.toString());
+    }
+
+    function printLayerTable(layer: Layer, maxTxPerBlock: number, maxTps: number, avgTps: number) {
+        const table = new Table({ head: ["Layer", "Max Tx/Block", "Max TPS", "Avg TPS"] });
+        table.push([layer.toUpperCase(), maxTxPerBlock, maxTps, avgTps.toFixed(2)]);
+        Logger.info(`\n${layer.toUpperCase()} throughput:` + "\n" + table.toString());
+    }
+
+    function calcLayerStats(db: DB, layer: Layer) {
+        const prefix = layer === 'l1' ? 'l1' : 'l2';
+        const blockCol = `${prefix}_height`;
+        const tsCol = `${prefix}_timestamp`;
+
+        const blockRows = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol}`).all() as { height: number, cnt: number }[];
+        if (blockRows.length === 0) {
+            Logger.warn(`[statistic] No ${layer.toUpperCase()} block data.`);
+            return;
+        }
+        const maxTxPerBlock = Math.max(...blockRows.map(r => r.cnt));
+
+        const tsRows = db.prepare(`SELECT ${tsCol} as ts FROM txs WHERE ${tsCol} IS NOT NULL`).all() as { ts: number }[];
+        const perSecondCount: Record<number, number> = {};
+        for (const r of tsRows) {
+            perSecondCount[r.ts] = (perSecondCount[r.ts] || 0) + 1;
+        }
+        const counts = Object.values(perSecondCount);
+        const maxTps = Math.max(...counts);
+        const avgTps = counts.reduce((a, b) => a + b, 0) / counts.length;
+
+        printLayerTable(layer, maxTxPerBlock, maxTps, avgTps);
+    }
+
+    function printBasicStats(total: number, l2Success: number, l1Success: number) {
+        const table = new Table({ head: ["Metric", "Count"] });
+        const successRate = total > 0 ? (l1Success / l2Success * 100).toFixed(2) + "%" : "N/A";
+        table.push(
+            ["Sent (Total)", total],
+            ["L2 Success", l2Success],
+            ["L1 Success", l1Success],
+            ["Success Rate", successRate]
+        );
+        Logger.info("\nBasic Transaction Stats:\n" + table.toString());
+    }
+
+    const db = _db;
+    
+    const total = db.prepare(`SELECT COUNT(*) as cnt FROM txs`).get() as { cnt: number };
+    const l2Success = db.prepare(`SELECT COUNT(*) as cnt FROM txs WHERE l2_txhash IS NOT NULL`).get() as { cnt: number };
+    const l1Success = db.prepare(`SELECT COUNT(*) as cnt FROM txs WHERE l1_txhash IS NOT NULL`).get() as { cnt: number };
+    printBasicStats(total.cnt, l2Success.cnt, l1Success.cnt);
+
+    
+    const delayRows = db.prepare(`SELECT l2_timestamp, l1_timestamp FROM txs WHERE l1_timestamp IS NOT NULL AND l2_timestamp IS NOT NULL`).all() as { l2_timestamp: number, l1_timestamp: number }[];
+    const delays = delayRows.map(r => r.l1_timestamp - r.l2_timestamp).filter(d => d >= 0);
+    if (delays.length === 0) {
+        Logger.warn('[statistic] No completed cross-chain transactions found.');
+    } else {
+        printDelayTable(delays);
+    }
+    
+    calcLayerStats(db, 'l2');
+    calcLayerStats(db, 'l1');
 }
 
 // Standalone execution
 if (require.main === module) {
-    startCrossChainListeners({
-        l1TargetHash: "0000000000000000000000000000000000000000",
-        zmqEndpoint: "tcp://10.8.0.25:30495",
-        l2Rpc: "https://rpc.dg.unifra.xyz",
-        moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
-        dbPath: "doge_headers.db",
-        transactions: []
+    (async () => {
+        await startCrossChainListeners({
+            l1TargetHash: "0000000000000000000000000000000000000000",
+            zmqEndpoint: "tcp://10.8.0.25:30495",
+            l2Rpc: "https://rpc.dg.unifra.xyz",
+            moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
+            dbPath: "doge_headers.db",
+            transactions: []
+        });
+    })().catch((e) => {
+        Logger.error(`cross-chain listeners terminated with error: ${e instanceof Error ? e.stack || e.message : String(e)}`);
     });
 }
