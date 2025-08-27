@@ -577,13 +577,13 @@ export function statistic(_db: DB): void {
             ["P95", percentile(delays, 95)],
             ["P99", percentile(delays, 99)]
         );
-        Logger.info("\nDelay Statistics (L2 → L1):\n" + table.toString());
+        Logger.title("\nDelay Statistics (L2 → L1):\n" + table.toString());
     }
 
     function printLayerTable(layer: Layer, maxTxPerBlock: number, maxTps: number, avgTps: number) {
         const table = new Table({ head: ["Layer", "Max Tx/Block", "Max TPS", "Avg TPS"] });
         table.push([layer.toUpperCase(), maxTxPerBlock, maxTps, avgTps.toFixed(2)]);
-        Logger.info(`\n${layer.toUpperCase()} throughput:` + "\n" + table.toString());
+        Logger.title(`\n${layer.toUpperCase()} throughput:` + "\n" + table.toString());
     }
 
     function calcLayerStats(db: DB, layer: Layer) {
@@ -598,14 +598,39 @@ export function statistic(_db: DB): void {
         }
         const maxTxPerBlock = Math.max(...blockRows.map(r => r.cnt));
 
+        
+        const blockRowsWithTs = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt, MAX(${tsCol}) as ts FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol} ORDER BY ${blockCol}`).all() as { height: number, cnt: number, ts: number }[];
+        let instantaneousTps: number[] = [];
+        for (let i = 1; i < blockRowsWithTs.length; i++) {
+            const deltaT = blockRowsWithTs[i].ts - blockRowsWithTs[i - 1].ts;
+            if (deltaT <= 0) continue;
+            instantaneousTps.push(blockRowsWithTs[i].cnt / deltaT);
+        }
+        const maxTps = instantaneousTps.length ? Math.max(...instantaneousTps) : 0;
+
+        
+        const blockTable = new Table({ head: ["Block", "Txs", "Δt(s)", "TPS"] });
+        for (let i = 0; i < blockRowsWithTs.length; i++) {
+            const row = blockRowsWithTs[i];
+            if (i === 0) {
+                blockTable.push([row.height, row.cnt, "-", "-"]);
+            } else {
+                const deltaT = row.ts - blockRowsWithTs[i - 1].ts || 1;
+                const tps = (row.cnt / deltaT).toFixed(2);
+                blockTable.push([row.height, row.cnt, deltaT, tps]);
+            }
+        }
+
+        Logger.title(`\n${layer.toUpperCase()} per-block stats:` + "\n" + blockTable.toString());
+
+        // --- 仍保留平均 TPS (按秒窗口) ---
         const tsRows = db.prepare(`SELECT ${tsCol} as ts FROM txs WHERE ${tsCol} IS NOT NULL`).all() as { ts: number }[];
         const perSecondCount: Record<number, number> = {};
         for (const r of tsRows) {
             perSecondCount[r.ts] = (perSecondCount[r.ts] || 0) + 1;
         }
         const counts = Object.values(perSecondCount);
-        const maxTps = Math.max(...counts);
-        const avgTps = counts.reduce((a, b) => a + b, 0) / counts.length;
+        const avgTps = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
 
         printLayerTable(layer, maxTxPerBlock, maxTps, avgTps);
     }
@@ -619,7 +644,7 @@ export function statistic(_db: DB): void {
             ["L1 Success", l1Success],
             ["Success Rate", successRate]
         );
-        Logger.info("\nBasic Transaction Stats:\n" + table.toString());
+        Logger.title("\nBasic Transaction Stats:\n" + table.toString());
     }
 
     const db = _db;

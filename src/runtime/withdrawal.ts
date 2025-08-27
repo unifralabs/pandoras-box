@@ -159,7 +159,7 @@ class WithdrawalRuntime {
                 to: this.moatContractAddress,
                 gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
-                value: this.defaultValue.add(BigNumber.from(senderIndex * 1e5 + i)).mul(1e10),
+                value: this.defaultValue.add(BigNumber.from(senderIndex * 1e4 + sender.getNonce())).mul(1e10),
                 data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
             });
