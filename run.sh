@@ -1,11 +1,12 @@
 #!/bin/bash
 
+yarn install
 yarn build
-rm -rf out/out/pandoras-box.log
-transactions=400
-batch=4
+echo ""> out/pandoras-box.log
+transactions=1000
+batch=100
 subaccounts=10
-concurrency=3
+concurrency=5
 
 RPC="https://rpc.dg.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
@@ -13,8 +14,6 @@ MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary bette
 
 out=latest
 mkdir -p ${out}
-
-rm -rf out/pandoras-box.log
 
 getPending(){
     ./bin/index.js --mode GET_PENDING_COUNT -u $RPC

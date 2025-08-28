@@ -1,9 +1,10 @@
 import { Subscriber } from "zeromq";
 import crypto from "crypto";
-import axios from "axios";
 import BetterSqlite3 from "better-sqlite3";
 type DB = InstanceType<typeof BetterSqlite3>;
 import { ethers } from "ethers";
+import { Command } from 'commander';
+import process from "node:process";
 import cliProgress from "cli-progress";
 import Table from "cli-table3";
 const { utils, providers } = ethers as any;
@@ -131,13 +132,13 @@ function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): Pa
             const script = block.subarray(offset, offset + pkLen);
             offset += pkLen;
             const p2pkh = isP2PKH(script);
-            let addrHash = p2pkh ? "" : script.subarray(3, 23).toString("hex");
+            let addrHash = p2pkh ? script.subarray(3, 23).toString("hex") : "";
 
             vouts.push({
                 value: valueLE,
                 scriptHex: script.toString("hex"),
                 isP2PKH: p2pkh,
-                addrHash: p2pkh ? addrHash : null,
+                addrHash: addrHash,
                 uid: valueLE,
             });
         }
@@ -248,6 +249,25 @@ export async function startL1Listener(
         return;
     }
 
+    const totalCount = db.prepare(`SELECT COUNT(*) as count FROM txs`).get() as { count: number };
+    const completedCountStmt = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l1_txhash IS NOT NULL`);
+    const initialCompleted = (completedCountStmt.get() as { count: number }).count;
+
+    Logger.info(`[l1-listener] Starting with ${totalCount.count} total transactions to track for L1 info.`);
+
+    const progressBar = new cliProgress.SingleBar({
+        format: '[L1] Progressed block {blockHeight} |{bar}| {percentage}% | {value}/{total} tx',
+        barCompleteChar: '█',
+        barIncompleteChar: '░',
+        hideCursor: true,
+        stopOnComplete: false,
+        clearOnComplete: false,
+        stream: process.stderr,
+        linewrap: true,
+        noTTYOutput: true
+    });
+    progressBar.start(totalCount.count, initialCompleted, { blockHeight: "N/A" });
+
     for await (const [_topic, message] of sock) {
         Logger.debug(`[doge-zmq] Received rawblock message (${message.length} bytes)`);
         if (message.length < 80) {
@@ -296,6 +316,7 @@ export async function startL1Listener(
             let rowsToUpdate = [];
             for (const ptx of parsedTxs) {
                 for (const vout of ptx.vouts) {
+                    Logger.debug(`[doge-zmq] vout.addrHash: ${vout.addrHash}, targetAddrHash: ${targetAddrHash},vout.uid: ${vout.uid}`);
                     if (vout.addrHash === targetAddrHash) {
                         rowsToUpdate.push({
                             uid: Number(vout.uid),
@@ -308,9 +329,17 @@ export async function startL1Listener(
             }
             insertBlockData(headerRow, rowsToUpdate);
 
+            const completedCount = (completedCountStmt.get() as { count: number }).count;
+            progressBar.update(completedCount, { blockHeight: height });
+
+            if (rowsToUpdate.length > 0) {
+                Logger.debug(`[l1] updated ${rowsToUpdate.length} transactions, progress: ${completedCount}/${totalCount.count}`);
+            }
+
             // After inserting/updating, check again if all transactions now have L1 info.
             remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
             if (remainingL1 === 0) {
+                progressBar.stop();
                 Logger.info('[l1-listener] All transactions have obtained L1 info. Stopping listener.');
                 // Gracefully close socket before exiting loop (zeromq@6 has close())
                 const maybeClose = (sock as any).close;
@@ -320,15 +349,8 @@ export async function startL1Listener(
                 break; // exit the for-await loop
             }
         }
-
-        // Example log of first tx vouts
-        if (parsedTxs.length > 0) {
-            const firstTx = parsedTxs[0];
-            Logger.debug(`[doge-zmq] First tx ${firstTx.hash} vouts=${firstTx.vouts.length}`);
-        }
-
         Logger.debug(
-            `[doge-zmq] New block: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
+            `[doge-zmq] New block processed: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
         );
     }
 }
@@ -492,6 +514,7 @@ export async function startL2Listener(
 
                 const pendingCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NULL OR l2_txhash = ''`).get() as { count: number };
                 if (pendingCount.count === 0) {
+                    progressBar.update(totalCount.count);
                     progressBar.stop();
                     Logger.info(`[l2-listener] All transactions have L2 information. Stopping L2 listener.`);
                     provider.removeAllListeners();
@@ -532,8 +555,10 @@ export function startCrossChainListeners(opts: {
     for (const tx of opts.transactions) {
         if (!tx.value) continue;
         let uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
-        db.prepare(`INSERT INTO txs (uid) VALUES (@uid)`).run({ uid });
+        // This logic must match how the UID is extracted from the 'WithdrawalQueued' event in the L2 listener.
         //324150000_0000000000
+        // This logic must match how the UID is extracted from the 'WithdrawalQueued' event in the L2 listener.
+        db.prepare(`INSERT INTO txs (uid) VALUES (@uid)`).run({ uid });
     }
 
     const endpoint = zmqEndpoint;
@@ -613,7 +638,19 @@ export function statistic(_db: DB): void {
         for (let i = 0; i < blockRowsWithTs.length; i++) {
             const row = blockRowsWithTs[i];
             if (i === 0) {
-                blockTable.push([row.height, row.cnt, "-", "-"]);
+                // Try to get the previous block's timestamp to calculate Δt for the first block
+                const prevBlockHeight = row.height - 1;
+                const headerTable = layer === 'l1' ? 'l1_headers' : 'l2_headers';
+                const prevBlockHeader = db.prepare(`SELECT timestamp as ts FROM ${headerTable} WHERE height = ?`).get(prevBlockHeight) as { ts: number } | undefined;
+
+                if (prevBlockHeader && prevBlockHeader.ts > 0) {
+                    const deltaT = row.ts - prevBlockHeader.ts || 1;
+                    const tps = (row.cnt / deltaT).toFixed(2);
+                    blockTable.push([row.height, row.cnt, deltaT, tps]);
+                } else {
+                    // Fallback if previous block is not in our DB
+                    blockTable.push([row.height, row.cnt, "-", "-"]);
+                }
             } else {
                 const deltaT = row.ts - blockRowsWithTs[i - 1].ts || 1;
                 const tps = (row.cnt / deltaT).toFixed(2);
@@ -669,14 +706,25 @@ export function statistic(_db: DB): void {
 
 // Standalone execution
 if (require.main === module) {
+    const program = new Command();
+    program
+        .option('--l1-target-hash <hash>', '20-byte hex L1 target address hash', "bc7656b9d24943793cbdd73fe392aca6ba7a9c3a")
+        .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint', "tcp://10.8.0.25:30495")
+        .option('--l2-rpc <url>', 'L2 RPC endpoint', "https://rpc.dg.unifra.xyz")
+        .option('--moat-address <address>', 'Moat contract address', "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2")
+        .option('--db-path <path>', 'Path to SQLite database file', "doge_headers.db")
+        .parse(process.argv);
+
+    const options = program.opts();
+
     (async () => {
         await startCrossChainListeners({
-            l1TargetHash: "0000000000000000000000000000000000000000",
-            zmqEndpoint: "tcp://10.8.0.25:30495",
-            l2Rpc: "https://rpc.dg.unifra.xyz",
-            moatAddress: "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2",
-            dbPath: "doge_headers.db",
-            transactions: []
+            l1TargetHash: options.l1TargetHash,
+            zmqEndpoint: options.zmqEndpoint,
+            l2Rpc: options.l2Rpc,
+            moatAddress: options.moatAddress,
+            dbPath: options.dbPath,
+            transactions: [] // Standalone mode doesn't pre-populate transactions
         });
     })().catch((e) => {
         Logger.error(`cross-chain listeners terminated with error: ${e instanceof Error ? e.stack || e.message : String(e)}`);

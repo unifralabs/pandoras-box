@@ -154,7 +154,10 @@ class Distributor {
         // Calculate how much each sub-account needs
         // to execute their part of the run cycle.
         // Each account needs at least numTx * (gasPrice * gasLimit + value)
-        const subAccountCost = BigNumber.from(this.totalTx).mul(baseTxCost);
+        const numTxPerAccount = this.requestedSubAccounts > 0
+            ? Math.ceil(this.totalTx / this.requestedSubAccounts)
+            : this.totalTx;
+        const subAccountCost = BigNumber.from(numTxPerAccount).mul(baseTxCost);
 
         // Calculate the cost of the single distribution transaction
         const singleDistributionCost = await withTimeout(

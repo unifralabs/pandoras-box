@@ -22,7 +22,7 @@ class WithdrawalRuntime {
     gasEstimation: BigNumber = BigNumber.from(0);
     gasPrice: BigNumber = BigNumber.from(0);
 
-    defaultValue: BigNumber = BigNumber.from(110000000);
+    defaultValue: BigNumber = parseUnits('1', 'ether')
     fixedGasPrice: BigNumber | null;
     moatContractAddress: string;
     targetAddress: string;
@@ -60,8 +60,7 @@ class WithdrawalRuntime {
     }
 
     GetValue(): BigNumber {
-        // 返回 2 ETH
-        return parseUnits('2', 'ether');
+        return parseUnits('1.2', 'ether');
     }
 
     async GetGasPrice(): Promise<BigNumber> {
@@ -159,7 +158,7 @@ class WithdrawalRuntime {
                 to: this.moatContractAddress,
                 gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
-                value: this.defaultValue.add(BigNumber.from(senderIndex * 1e4 + sender.getNonce())).mul(1e10),
+                value: this.defaultValue.add(BigNumber.from(senderIndex * 1e4 + sender.getNonce())).mul(BigNumber.from('10000000000')).add(parseUnits('0.1', 'ether')),
                 data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
             });
