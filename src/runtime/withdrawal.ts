@@ -61,7 +61,7 @@ class WithdrawalRuntime {
 
     GetValue(): BigNumber {
         // Base value used per withdrawToL1 tx (excludes uidPart). Kept in sync with ConstructTransactions.
-        return this.defaultValue.add(parseUnits('0.1', 'ether'));
+        return this.defaultValue.add(parseUnits('0.2', 'ether'));
     }
 
     async GetGasPrice(): Promise<BigNumber> {
@@ -180,6 +180,7 @@ class WithdrawalRuntime {
                     zmqEndpoint: this.zmqEndpoint,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
+                    transactions: transactions.flat()
                 });
 
                 WithdrawalRuntime.listenerStarted = true;

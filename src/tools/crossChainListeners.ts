@@ -1,12 +1,14 @@
-import { Subscriber } from "zeromq";
-import crypto from "crypto";
 import BetterSqlite3 from "better-sqlite3";
-type DB = InstanceType<typeof BetterSqlite3>;
-import { ethers } from "ethers";
-import { Command } from 'commander';
-import process from "node:process";
 import cliProgress from "cli-progress";
 import Table from "cli-table3";
+import { Command } from 'commander';
+import crypto from "crypto";
+import { ethers } from "ethers";
+import process from "node:process";
+import { Subscriber } from "zeromq";
+import MoatABI from "../abi/moat";
+import Logger from "../logger/logger";
+type DB = InstanceType<typeof BetterSqlite3>;
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
 const parseEther = (ethers as any).utils?.parseEther || ((value: string) => {
@@ -22,8 +24,6 @@ const parseEther = (ethers as any).utils?.parseEther || ((value: string) => {
 });
 
 type TransactionRequest = any;
-import MoatABI from "../abi/moat";
-import Logger from "../logger/logger";
 
 /** Decode Bitcoin-style VarInt. Returns [value, newOffset] */
 function readVarInt(buf: Buffer, offset: number): [number, number] {
@@ -93,7 +93,7 @@ function isP2PKH(script: Buffer): boolean {
     );
 }
 
-function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): ParsedTx[] {
+function parseDogeCoinTransactions(block: Buffer): ParsedTx[] {
     const txs: ParsedTx[] = [];
     let offset = 80; // header
     const [txCount, off1] = readVarInt(block, offset);
@@ -132,7 +132,7 @@ function parseDogeCoinTransactions(block: Buffer, targetAddressHash: string): Pa
             const script = block.subarray(offset, offset + pkLen);
             offset += pkLen;
             const p2pkh = isP2PKH(script);
-            let addrHash = p2pkh ? script.subarray(3, 23).toString("hex") : "";
+            const addrHash = p2pkh ? script.subarray(3, 23).toString("hex") : "";
 
             vouts.push({
                 value: valueLE,
@@ -288,7 +288,7 @@ export async function startL1Listener(
 
         const heightInfo = height !== null ? `height=${height}` : "height=unknown";
 
-        const parsedTxs = parseDogeCoinTransactions(message, targetAddrHash);
+        const parsedTxs = parseDogeCoinTransactions(message);
         const txHashes = parsedTxs.map((t) => t.hash);
 
         if (height !== null) {
