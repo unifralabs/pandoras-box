@@ -554,10 +554,7 @@ export function startCrossChainListeners(opts: {
 
     for (const tx of opts.transactions) {
         if (!tx.value) continue;
-        let uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
-        // This logic must match how the UID is extracted from the 'WithdrawalQueued' event in the L2 listener.
-        //324150000_0000000000
-        // This logic must match how the UID is extracted from the 'WithdrawalQueued' event in the L2 listener.
+        const uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
         db.prepare(`INSERT INTO txs (uid) VALUES (@uid)`).run({ uid });
     }
 

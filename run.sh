@@ -3,9 +3,9 @@
 yarn install
 yarn build
 echo ""> out/pandoras-box.log
-transactions=1000
+transactions=100
 batch=100
-subaccounts=10
+subaccounts=20
 concurrency=5
 
 RPC="https://rpc.dg.unifra.xyz"
@@ -73,7 +73,7 @@ runERC721()
     exit 0
 }
 
-MOAT_CONTRACT=0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2
+MOAT_CONTRACT=0x394ace8E1a27494FDBE2833422681DA136E96153
 runWithDrawal(){
     rm -rf doge_headers.db
     export LOG_LEVEL=DEBUG
@@ -85,7 +85,7 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
-    --target-address "nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH" \
+    --target-address "nm2XcS85GHU44A1eSu5nAyWrP9NCK1K7RK" \
     --doge-zmq-endpoint "tcp://10.8.0.25:30495" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }

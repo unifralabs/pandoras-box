@@ -60,7 +60,8 @@ class WithdrawalRuntime {
     }
 
     GetValue(): BigNumber {
-        return parseUnits('1.2', 'ether');
+        // Base value used per withdrawToL1 tx (excludes uidPart). Kept in sync with ConstructTransactions.
+        return this.defaultValue.add(parseUnits('0.1', 'ether'));
     }
 
     async GetGasPrice(): Promise<BigNumber> {
@@ -126,7 +127,7 @@ class WithdrawalRuntime {
             value: this.GetValue(),
             data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
         });
-        this.gasEstimation = sampleGas.mul(2); // add safety margin
+        this.gasEstimation = sampleGas;
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -152,13 +153,14 @@ class WithdrawalRuntime {
                 throw new Error(`Invalid sender at transaction index ${i}`);
             }
 
+            const uidPart = BigNumber.from(senderIndex * 1e4 + sender.getNonce()).mul(BigNumber.from('10000000000'));
             transactions[senderIndex].push({
                 from: sender.getAddress(),
                 chainId: chainID,
                 to: this.moatContractAddress,
                 gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
-                value: this.defaultValue.add(BigNumber.from(senderIndex * 1e4 + sender.getNonce())).mul(BigNumber.from('10000000000')).add(parseUnits('0.1', 'ether')),
+                value: this.GetValue().add(uidPart),
                 data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
             });
@@ -178,7 +180,6 @@ class WithdrawalRuntime {
                     zmqEndpoint: this.zmqEndpoint,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
-                    transactions: transactions.flat() as [TransactionRequest],
                 });
 
                 WithdrawalRuntime.listenerStarted = true;

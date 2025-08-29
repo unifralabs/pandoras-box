@@ -104,7 +104,7 @@ async function run() {
     const options = program.opts();
 
     const url = options.jsonRpc;
-    let transactionCount = options.transactions;
+    const transactionCount = options.transactions;
     const mode = options.mode;
     const mnemonic = options.mnemonic;
     const subAccountsCount = options.subAccounts;
@@ -217,7 +217,7 @@ async function run() {
     // Get current block height
     const provider = new JsonRpcProvider(url);
     const currentBlock = await provider.getBlockNumber();
-    let startBlock = currentBlock;
+    const startBlock = currentBlock;
 
     // Run the specific runtime
     const txHashes = await Engine.Run(
