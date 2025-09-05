@@ -121,13 +121,13 @@ class WithdrawalRuntime {
         }
 
         // Estimate gas for withdrawToL1 once (using first valid account)
-        const sampleGas = await this.provider.estimateGas({
-            from: validAccounts[0].getAddress(),
-            to: this.moatContractAddress,
-            value: this.GetValue(),
-            data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
-        });
-        this.gasEstimation = sampleGas;
+        // const sampleGas = await this.provider.estimateGas({
+        //     from: validAccounts[0].getAddress(),
+        //     to: this.moatContractAddress,
+        //     value: this.GetValue(),
+        //     data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
+        // });
+        this.gasEstimation = BigNumber.from(153_785_00);
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',

@@ -299,7 +299,8 @@ export async function startL1Listener(
             const bits = message.readUInt32LE(72);
             const nonce = message.readUInt32LE(76);
 
-            const nowTs = Math.floor(Date.now() / 1000);
+            const nowSec = Math.floor(Date.now() / 1000);
+            const nowMs = Date.now();
             const headerRow = {
                 height,
                 hash: blockHash,
@@ -307,13 +308,13 @@ export async function startL1Listener(
                 prev_hash: prevHash,
                 merkle_root: merkleRoot,
                 timestamp,
-                create_at: nowTs,
+                create_at: nowMs,
                 bits,
                 nonce,
                 size_bytes: message.length,
             };
 
-            let rowsToUpdate = [];
+            const rowsToUpdate: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[] = [];
             for (const ptx of parsedTxs) {
                 for (const vout of ptx.vouts) {
                     Logger.debug(`[doge-zmq] vout.addrHash: ${vout.addrHash}, targetAddrHash: ${targetAddrHash},vout.uid: ${vout.uid}`);
@@ -322,7 +323,7 @@ export async function startL1Listener(
                             uid: Number(vout.uid),
                             l1_txhash: ptx.hash,
                             l1_height: height,
-                            l1_timestamp: nowTs,
+                            l1_timestamp: nowSec,
                         });
                     }
                 }
@@ -609,9 +610,8 @@ export function statistic(_db: DB): void {
     }
 
     function calcLayerStats(db: DB, layer: Layer) {
-        const prefix = layer === 'l1' ? 'l1' : 'l2';
-        const blockCol = `${prefix}_height`;
-        const tsCol = `${prefix}_timestamp`;
+    const prefix = layer === 'l1' ? 'l1' : 'l2';
+    const blockCol = `${prefix}_height`;
 
         const blockRows = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol}`).all() as { height: number, cnt: number }[];
         if (blockRows.length === 0) {
@@ -620,51 +620,65 @@ export function statistic(_db: DB): void {
         }
         const maxTxPerBlock = Math.max(...blockRows.map(r => r.cnt));
 
-        
-        const blockRowsWithTs = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt, MAX(${tsCol}) as ts FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol} ORDER BY ${blockCol}`).all() as { height: number, cnt: number, ts: number }[];
-        let instantaneousTps: number[] = [];
-        for (let i = 1; i < blockRowsWithTs.length; i++) {
-            const deltaT = blockRowsWithTs[i].ts - blockRowsWithTs[i - 1].ts;
-            if (deltaT <= 0) continue;
-            instantaneousTps.push(blockRowsWithTs[i].cnt / deltaT);
-        }
-        const maxTps = instantaneousTps.length ? Math.max(...instantaneousTps) : 0;
+        // Build counts by height and ensure we always use consecutive header timestamps (no skipping empty blocks)
+        const blockRowsWithCnt = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol} ORDER BY ${blockCol}`).all() as { height: number, cnt: number }[];
 
-        
-        const blockTable = new Table({ head: ["Block", "Txs", "Δt(s)", "TPS"] });
-        for (let i = 0; i < blockRowsWithTs.length; i++) {
-            const row = blockRowsWithTs[i];
-            if (i === 0) {
-                // Try to get the previous block's timestamp to calculate Δt for the first block
-                const prevBlockHeight = row.height - 1;
-                const headerTable = layer === 'l1' ? 'l1_headers' : 'l2_headers';
-                const prevBlockHeader = db.prepare(`SELECT timestamp as ts FROM ${headerTable} WHERE height = ?`).get(prevBlockHeight) as { ts: number } | undefined;
+        const minHeight = blockRowsWithCnt[0].height;
+        const maxHeight = blockRowsWithCnt[blockRowsWithCnt.length - 1].height;
+    const headerTable = layer === 'l1' ? 'l1_headers' : 'l2_headers';
+    const timeCol = layer === 'l1' ? 'create_at' : 'timestamp';
 
-                if (prevBlockHeader && prevBlockHeader.ts > 0) {
-                    const deltaT = row.ts - prevBlockHeader.ts || 1;
-                    const tps = (row.cnt / deltaT).toFixed(2);
-                    blockTable.push([row.height, row.cnt, deltaT, tps]);
+    // Fetch header timestamps for [minHeight-1, maxHeight]
+    const headerRows = db.prepare(`SELECT height, ${timeCol} as ts FROM ${headerTable} WHERE height BETWEEN ${minHeight - 1} AND ${maxHeight} ORDER BY height`).all() as { height: number, ts: number }[];
+        const headerTs: Record<number, number> = {};
+    for (const h of headerRows) headerTs[h.height] = h.ts;
+
+    // If L1 and the create_at looks like ms (>= 1e11), normalize to seconds
+    const looksMs = layer === 'l1' && Object.values(headerTs).some(v => typeof v === 'number' && v >= 1e11);
+    const toSec = (v: number) => looksMs ? (v / 1000) : v;
+
+    const blockTable = new Table({ head: ["Block", "Txs", "Δt(s)", "TPS"] });
+        const instantaneousTps: number[] = [];
+    const missingPrev: number[] = [];
+    const missingCurr: number[] = [];
+        for (const row of blockRowsWithCnt) {
+            const currTsRaw = headerTs[row.height];
+            const prevTsRaw = headerTs[row.height - 1];
+            const currTs: number | undefined = typeof currTsRaw === 'number' ? toSec(currTsRaw) : undefined;
+            const prevTs: number | undefined = typeof prevTsRaw === 'number' ? toSec(prevTsRaw) : undefined;
+            if (typeof currTs === 'number' && typeof prevTs === 'number') {
+                const deltaT = currTs - prevTs;
+                if (deltaT > 0) {
+                    const tpsVal = row.cnt / deltaT;
+                    instantaneousTps.push(tpsVal);
+                    blockTable.push([row.height, row.cnt, Number(deltaT.toFixed(2)), tpsVal.toFixed(2)]);
                 } else {
-                    // Fallback if previous block is not in our DB
+                    // Non-positive delta (equal or out-of-order timestamps)
                     blockTable.push([row.height, row.cnt, "-", "-"]);
                 }
             } else {
-                const deltaT = row.ts - blockRowsWithTs[i - 1].ts || 1;
-                const tps = (row.cnt / deltaT).toFixed(2);
-                blockTable.push([row.height, row.cnt, deltaT, tps]);
+                // Missing header(s)
+                if (typeof currTs !== 'number') missingCurr.push(row.height);
+                if (typeof prevTs !== 'number') missingPrev.push(row.height - 1);
+                blockTable.push([row.height, row.cnt, "-", "-"]);
             }
         }
 
         Logger.title(`\n${layer.toUpperCase()} per-block stats:` + "\n" + blockTable.toString());
 
-        // --- 仍保留平均 TPS (按秒窗口) ---
-        const tsRows = db.prepare(`SELECT ${tsCol} as ts FROM txs WHERE ${tsCol} IS NOT NULL`).all() as { ts: number }[];
-        const perSecondCount: Record<number, number> = {};
-        for (const r of tsRows) {
-            perSecondCount[r.ts] = (perSecondCount[r.ts] || 0) + 1;
-        }
-        const counts = Object.values(perSecondCount);
-        const avgTps = counts.length ? counts.reduce((a, b) => a + b, 0) / counts.length : 0;
+    // Diagnostics for missing headers
+    const uniq = (arr: number[]) => Array.from(new Set(arr)).sort((a,b)=>a-b);
+    const missPrevUniq = uniq(missingPrev);
+    const missCurrUniq = uniq(missingCurr);
+    if (missPrevUniq.length || missCurrUniq.length) {
+        const sample = (xs: number[]) => xs.slice(0, 10).join(', ') + (xs.length > 10 ? ` ... (+${xs.length-10})` : '');
+        if (missPrevUniq.length) Logger.warn(`[statistic] Missing previous headers (${layer.toUpperCase()}): ${sample(missPrevUniq)}`);
+        if (missCurrUniq.length) Logger.warn(`[statistic] Missing current headers (${layer.toUpperCase()}): ${sample(missCurrUniq)}`);
+        Logger.warn(`[statistic] Missing headers cause '-' in Δt/TPS. Fill ${layer.toUpperCase()} headers for consecutive heights to compute instantaneous TPS.`);
+    }
+
+        const maxTps = instantaneousTps.length ? Math.max(...instantaneousTps) : 0;
+        const avgTps = instantaneousTps.length ? instantaneousTps.reduce((a, b) => a + b, 0) / instantaneousTps.length : 0;
 
         printLayerTable(layer, maxTxPerBlock, maxTps, avgTps);
     }
