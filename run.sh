@@ -1,16 +1,18 @@
 #!/bin/bash
 
-yarn install
+#yarn install
 yarn build
 echo ""> out/pandoras-box.log
-transactions=10000
+transactions=5000
 batch=200
-subaccounts=1000
-concurrency=50
+subaccounts=500
+concurrency=20
 
-RPC="https://rpc.dg.unifra.xyz"
+RPC="https://rpc.perf.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
+
+MOAT_CONTRACT=0x8e7E0351b3F3342Df7Ba43Eb3d857fCEE675F90C
 
 out=latest
 mkdir -p ${out}
@@ -73,11 +75,11 @@ runERC721()
     exit 0
 }
 
-MOAT_CONTRACT=0xa57ffa4fDC514B158AE70f6Ea622F78F2305622c
+
 runWithDrawal(){
     rm -rf doge_headers.db
     export LOG_LEVEL=DEBUG
-    ./bin/index.js -u $RPC -m "$MNEMONIC" \
+    ./bin/index.js -u "$RPC" -m "$MNEMONIC" \
     --fixed-gas-price \
     -t $transactions \
     -b $batch \
@@ -85,8 +87,8 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
-    --target-address "nm2XcS85GHU44A1eSu5nAyWrP9NCK1K7RK" \
-    --doge-zmq-endpoint "tcp://localhost:28332" \
+    --target-address "na16XcjNanNzx9eD4NrUaUh7Luyb5iMZbs" \
+    --doge-zmq-endpoint "tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
 

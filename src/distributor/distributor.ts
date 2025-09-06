@@ -11,9 +11,9 @@ import DistributorErrors from './errors';
 
 // Timeout constants (in milliseconds)
 const TIMEOUT_CONSTANTS = {
-    QUICK_OPERATION: 5000,    // 5 seconds for quick network calls (gas price, nonce, etc.)
-    BALANCE_QUERY: 10000,      // 5 seconds for balance queries
-    TRANSACTION_SEND: 15000,   // 15 seconds for sending transactions
+    QUICK_OPERATION: 15000,
+    BALANCE_QUERY: 30000,
+    TRANSACTION_SEND: 30000,   
     TRANSACTION_CONFIRM: 18000 // 18 seconds for transaction confirmation
 } as const;
 
@@ -63,6 +63,8 @@ class Distributor {
     requestedSubAccounts: number;
     readyMnemonicIndexes: number[];
     concurrency?: number;
+    // 统计获取余额失败的账号数量（用于避免 fallback 误把超时账号当作 ready）
+    private failedBalanceCount: number;
 
     constructor(
         mnemonic: string,
@@ -78,6 +80,7 @@ class Distributor {
         this.runtimeEstimator = runtimeEstimator;
         this.readyMnemonicIndexes = [];
         this.concurrency = concurrency !== undefined ? Number.parseInt(concurrency as any, 10) : undefined;
+    this.failedBalanceCount = 0;
 
         this.provider = new JsonRpcProvider(url);
         this.ethWallet = Wallet.fromMnemonic(
@@ -107,9 +110,12 @@ class Distributor {
             // Double-check: if readyMnemonicIndexes is empty but no accounts need funding,
             // it means balance queries may have failed. Use all requested accounts as fallback.
             if (this.readyMnemonicIndexes.length === 0) {
-                Logger.warn('No accounts marked as ready despite sufficient funds. Using all requested accounts as fallback.');
-                // Generate all account indexes from 1 to requestedSubAccounts
-                this.readyMnemonicIndexes = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
+                if (this.failedBalanceCount === 0) {
+                    Logger.warn('No accounts marked as ready despite sufficient funds. Using all requested accounts as fallback.');
+                    this.readyMnemonicIndexes = Array.from({length: this.requestedSubAccounts}, (_, i) => i + 1);
+                } else {
+                    Logger.warn(`Balance queries failed for ${this.failedBalanceCount} accounts; skip fallback to avoid using unknown balances.`);
+                }
             }
             
             Logger.info(`Returning ${this.readyMnemonicIndexes.length} ready account indexes`);
@@ -233,14 +239,9 @@ class Distributor {
 
                 // Handle failed requests
                 if (result.balance === null || result.error) {
-                    Logger.warn(`Failed to get balance for account ${result.index}: ${result.error || 'Unknown error'}`);
-                    
-                    // For failed balance queries, we'll assume the account has sufficient funds
-                    // to avoid blocking the entire process. This is a conservative fallback.
-                    if (result.error && result.error.includes('timed out')) {
-                        Logger.warn(`Assuming account ${result.index} has sufficient funds due to timeout`);
-                        this.readyMnemonicIndexes.push(result.index);
-                    }
+                    this.failedBalanceCount++;
+                    Logger.warn(`Failed to get balance for account ${result.index}: ${result.error || 'Unknown error'} (SKIPPED)`);
+                    // 关键修改：超时或失败的账号不进入 ready / 不进入待补，如需后续再次尝试可在外层重新跑 distribute
                     continue;
                 }
 

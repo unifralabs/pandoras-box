@@ -61,7 +61,11 @@ class WithdrawalRuntime {
 
     GetValue(): BigNumber {
         // Base value used per withdrawToL1 tx (excludes uidPart). Kept in sync with ConstructTransactions.
-        return this.defaultValue.add(parseUnits('0.2', 'ether'));
+        return this.defaultValue.add(parseUnits('0.4', 'ether'));
+    }
+
+    CallContractValue(): BigNumber{
+        return this.defaultValue.add(parseUnits('0.1', 'ether'));
     }
 
     async GetGasPrice(): Promise<BigNumber> {
@@ -127,7 +131,7 @@ class WithdrawalRuntime {
         //     value: this.GetValue(),
         //     data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
         // });
-        this.gasEstimation = BigNumber.from(153_785_00);
+        this.gasEstimation = BigNumber.from(153_785*2);
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -160,7 +164,7 @@ class WithdrawalRuntime {
                 to: this.moatContractAddress,
                 gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
-                value: this.GetValue().add(uidPart),
+                value: this.CallContractValue().add(uidPart),
                 data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
             });
