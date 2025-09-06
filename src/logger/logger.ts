@@ -8,7 +8,7 @@ class Logger {
     private static logLevel: string = process.env.LOG_LEVEL || 'INFO';
     
     private static shouldLog(level: string): boolean {
-        const levels = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+        const levels = ['INFO', 'WARN', 'ERROR'];
         const currentLevelIndex = levels.indexOf(Logger.logLevel.toUpperCase());
         const messageLevelIndex = levels.indexOf(level.toUpperCase());
         return messageLevelIndex >= currentLevelIndex;

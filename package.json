@@ -33,7 +33,8 @@
         "chmod": "chmod u+x ./bin/index.js",
         "prepare": "yarn build",
         "prepublishOnly": "yarn lint && yarn prettier",
-        "get-pending": "node bin/tools/getPendingCount.js"
+    "get-pending": "node bin/tools/getPendingCount.js",
+    "listeners": "node bin/tools/crossChainListeners.js"
     },
     "bin": {
         "pandoras-box": "./bin/index.js"

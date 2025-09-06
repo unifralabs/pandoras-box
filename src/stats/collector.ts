@@ -586,7 +586,7 @@ class StatCollector {
     }
 
     printBlockData(blockInfoMap: Map<number, BlockInfo>) {
-        Logger.info('\nBlock utilization data:');
+        Logger.title('\nBlock utilization data:');
         const utilizationTable = new Table({
             head: [
                 'Block #',
@@ -613,7 +613,7 @@ class StatCollector {
             ]);
         });
 
-        Logger.info(utilizationTable.toString());
+        Logger.title(utilizationTable.toString());
     }
 
     printFinalData(tps: number, blockInfoMap: Map<number, BlockInfo>) {
@@ -655,7 +655,7 @@ class StatCollector {
             avgTps > 0 ? avgTps.toFixed(1) : 'N/A',
         ]);
 
-        Logger.info(finalDataTable.toString());
+        Logger.title(finalDataTable.toString());
     }
 
     async generateStats(

@@ -1,14 +1,15 @@
 #!/bin/bash
 
 #yarn install
-yarn build
-echo ""> out/pandoras-box.log
-transactions=5000
-batch=200
-subaccounts=500
-concurrency=20
+#yarn build
+rm -rf out/pandoras-box.log
+transactions=2000
+batch=300
+subaccounts=200
+concurrency=100
 
 RPC="https://rpc.perf.unifra.xyz"
+zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
 
@@ -87,22 +88,22 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
-    --target-address "na16XcjNanNzx9eD4NrUaUh7Luyb5iMZbs" \
-    --doge-zmq-endpoint "tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332" \
+    --target-address "nr1wfXopXGQe2TDKmGM7xkHFGYNN3Her39" \
+    --doge-zmq-endpoint "${zmq}" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
 
 runWithDrawal
 
-# getPending
-# clearPending
+#getPending
+#clearPending
 # exit 0
 
-# runEOA
+#runEOA
 # #getPending
 # exit 0
 
 # sleep 30
 # runERC20
 
-# runERC721
+#runERC721

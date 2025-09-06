@@ -447,7 +447,7 @@ export async function startL2Listener(
                 }
 
                 const txsToUpdate: { uid: number; tx: string; h: number; ts: number }[] = [];
-                Logger.debug(`[l2] processing block ${nextHeight} with ${block.transactions.length} transactions`);
+                Logger.info(`[l2] processing block ${nextHeight} with ${block.transactions.length} transactions`);
 
                 let receiptMap: Record<string, any> = {};
                 try {
@@ -678,7 +678,21 @@ export function statistic(_db: DB): void {
     }
 
         const maxTps = instantaneousTps.length ? Math.max(...instantaneousTps) : 0;
-        const avgTps = instantaneousTps.length ? instantaneousTps.reduce((a, b) => a + b, 0) / instantaneousTps.length : 0;
+
+        // New Avg TPS definition: total tracked txs divided by time span between earliest & latest tx blocks
+        const totalTrackedTx = blockRowsWithCnt.reduce((sum, r) => sum + r.cnt, 0);
+        const firstHeight = blockRowsWithCnt[0].height;
+        const lastHeight = blockRowsWithCnt[blockRowsWithCnt.length - 1].height;
+        const firstTsRaw = headerTs[firstHeight];
+        const lastTsRaw = headerTs[lastHeight];
+        let avgTps: number = 0;
+        if (typeof firstTsRaw === 'number' && typeof lastTsRaw === 'number') {
+            const span = toSec(lastTsRaw) - toSec(firstTsRaw);
+            if (span > 0) avgTps = totalTrackedTx / span;
+            else Logger.warn(`[statistic] Non-positive time span (${span}) for ${layer.toUpperCase()} average TPS calculation.`);
+        } else {
+            Logger.warn(`[statistic] Missing timestamps for first (${firstHeight}) or last (${lastHeight}) block; Avg TPS set to 0.`);
+        }
 
         printLayerTable(layer, maxTxPerBlock, maxTps, avgTps);
     }
