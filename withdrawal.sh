@@ -6,10 +6,10 @@ rm -rf out/pandoras-box.log
 if [ -f doge_headers.db ]; then
     mv doge_headers.db "$(date +%Y%m%d_%H%M%S)_doge_headers.db"
 fi
-transactions=2000
-batch=300
-subaccounts=500
-concurrency=100
+transactions=10000
+batch=1
+subaccounts=50
+concurrency=1
 
 RPC="https://rpc.perf.unifra.xyz"
 zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
@@ -58,4 +58,4 @@ runWithDrawal(){
 }
 
 runWithDrawal
-./report.sh
+bash ./report.sh
