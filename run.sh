@@ -3,7 +3,7 @@
 #yarn install
 #yarn build
 rm -rf out/pandoras-box.log
-transactions=2000
+transactions=5000
 batch=300
 subaccounts=200
 concurrency=100
@@ -88,7 +88,7 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
-    --target-address "nr1wfXopXGQe2TDKmGM7xkHFGYNN3Her39" \
+    --target-address "njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF" \
     --doge-zmq-endpoint "${zmq}" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }

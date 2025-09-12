@@ -604,7 +604,7 @@ export function statistic(_db: DB): void {
     }
 
     function printLayerTable(layer: Layer, maxTxPerBlock: number, maxTps: number, avgTps: number) {
-        const table = new Table({ head: ["Layer", "Max Tx/Block", "Max TPS", "Avg TPS"] });
+        const table = new Table({ head: ["Layer", "Max Tx/Block", "Max block TPS", "Avg TPS"] });
         table.push([layer.toUpperCase(), maxTxPerBlock, maxTps, avgTps.toFixed(2)]);
         Logger.title(`\n${layer.toUpperCase()} throughput:` + "\n" + table.toString());
     }
@@ -637,7 +637,7 @@ export function statistic(_db: DB): void {
     const looksMs = layer === 'l1' && Object.values(headerTs).some(v => typeof v === 'number' && v >= 1e11);
     const toSec = (v: number) => looksMs ? (v / 1000) : v;
 
-    const blockTable = new Table({ head: ["Block", "Txs", "Δt(s)", "TPS"] });
+    const blockTable = new Table({ head: ["Block height", "Tx count", "Δt(s)", "Block TPS"] });
         const instantaneousTps: number[] = [];
     const missingPrev: number[] = [];
     const missingCurr: number[] = [];
