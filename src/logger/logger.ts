@@ -8,9 +8,19 @@ class Logger {
     private static logLevel: string = process.env.LOG_LEVEL || 'INFO';
     
     private static shouldLog(level: string): boolean {
-        const levels = ['INFO', 'WARN', 'ERROR'];
-        const currentLevelIndex = levels.indexOf(Logger.logLevel.toUpperCase());
-        const messageLevelIndex = levels.indexOf(level.toUpperCase());
+        // Order: DEBUG < INFO < WARN < ERROR
+        const levels = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+        const desiredLevel = level.toUpperCase();
+        let currentLevelIndex = levels.indexOf(Logger.logLevel.toUpperCase());
+        // Fallback to INFO if LOG_LEVEL is unknown
+        if (currentLevelIndex === -1) {
+            currentLevelIndex = levels.indexOf('INFO');
+        }
+        let messageLevelIndex = levels.indexOf(desiredLevel);
+        // Unknown message levels default to INFO threshold
+        if (messageLevelIndex === -1) {
+            messageLevelIndex = levels.indexOf('INFO');
+        }
         return messageLevelIndex >= currentLevelIndex;
     }
 
