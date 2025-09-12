@@ -214,7 +214,8 @@ export function createTxDatabase(dbPath = "doge_headers.db"): DB {
 export async function startL1Listener(
     db: DB,
     zmqEndpoint: string,
-    targetAddrHash: string = ""
+    targetAddrHash: string = "",
+    bars?: cliProgress.MultiBar
 ) {
     Logger.debug(`[l1-listener] startL1Listener zmqEndpoint: ${zmqEndpoint}, targetAddrHash: ${targetAddrHash}`);
     // previous db.exec moved to createTxDatabase, so assume db ready
@@ -255,8 +256,8 @@ export async function startL1Listener(
 
     Logger.info(`[l1-listener] Starting with ${totalCount.count} total transactions to track for L1 info.`);
 
-    const progressBar = new cliProgress.SingleBar({
-        format: '[L1] Progressed block {blockHeight} |{bar}| {percentage}% | {value}/{total} tx',
+    const l1BarOptions = {
+        format: '[L1] Progressed block {blockHeight} |{bar}| {percentage}% | {value}/{total} tx | Elapsed: {duration_formatted}',
         barCompleteChar: '█',
         barIncompleteChar: '░',
         hideCursor: true,
@@ -265,8 +266,14 @@ export async function startL1Listener(
         stream: process.stderr,
         linewrap: true,
         noTTYOutput: true
-    });
-    progressBar.start(totalCount.count, initialCompleted, { blockHeight: "N/A" });
+    } as const;
+
+    const progressBar = bars
+        ? bars.create(totalCount.count, initialCompleted, { blockHeight: "N/A" }, l1BarOptions as any)
+        : new cliProgress.SingleBar(l1BarOptions as any);
+    if (!(bars)) {
+        (progressBar as cliProgress.SingleBar).start(totalCount.count, initialCompleted, { blockHeight: "N/A" });
+    }
 
     for await (const [_topic, message] of sock) {
         Logger.debug(`[doge-zmq] Received rawblock message (${message.length} bytes)`);
@@ -360,7 +367,8 @@ export async function startL1Listener(
 export async function startL2Listener(
     db: DB,
     rpcEndpoint: string,
-    moatAddress: string
+    moatAddress: string,
+    bars?: cliProgress.MultiBar
 ): Promise<void> {
     const provider = new (ethers as any).JsonRpcProvider(rpcEndpoint as any);
     provider.pollingInterval = 500;
@@ -394,8 +402,8 @@ export async function startL2Listener(
     Logger.info(`[l2-listener] Starting with ${totalCount.count} total transactions to track`);
 
     // Create progress bar
-    const progressBar = new cliProgress.SingleBar({
-        format: '[L2] Progress |{bar}| {percentage}% | {value}/{total} tx',
+    const l2BarOptions = {
+        format: '[L2] Progress |{bar}| {percentage}% | {value}/{total} tx | Elapsed: {duration_formatted}',
         barCompleteChar: '█',
         barIncompleteChar: '░',
         hideCursor: true,
@@ -404,9 +412,15 @@ export async function startL2Listener(
         stream: process.stderr,  // use stderr so it doesn't clash with other stdout bars
         linewrap: true,          // keep bar on its own line
         noTTYOutput: true        // force rendering even if TTY detection fails
-    });
-    progressBar.start(totalCount.count, 0);
-    progressBar.render(); // render immediately
+    } as const;
+
+    const progressBar = bars
+        ? bars.create(totalCount.count, 0, {}, l2BarOptions as any)
+        : new cliProgress.SingleBar(l2BarOptions as any);
+    if (!(bars)) {
+        (progressBar as cliProgress.SingleBar).start(totalCount.count, 0);
+        (progressBar as cliProgress.SingleBar).render();
+    }
 
     async function pump() {
         if (pumping) return;
@@ -494,14 +508,14 @@ export async function startL2Listener(
                 }
 
                 db.transaction(() => {
-                    clearHeight.run(nextHeight);
+                    //clearHeight.run(nextHeight);
                     for (const txData of txsToUpdate) updateL2Tx.run(txData);
                     insertL2Header.run({ height: nextHeight, hash: block.hash, timestamp: block.timestamp, create_at: Math.floor(Date.now() / 1000) });
                 })();
 
                 lastProcessed = nextHeight;
                 lastHash = block.hash;
-                Logger.debug(`[l2-listener] processed block ${nextHeight}`);
+                Logger.info(`[l2-listener] processed block ${nextHeight}`);
 
                 if (txsToUpdate.length > 0) {
                     const completedCount = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l2_txhash IS NOT NULL AND l2_txhash != ''`).get() as { count: number };
@@ -549,8 +563,8 @@ export function startCrossChainListeners(opts: {
     dbPath?: string;
     transactions: TransactionRequest[]
 }): Promise<void> {
-    const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress, dbPath } = opts;
-    const db = createTxDatabase(dbPath);
+    const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress } = opts;
+    const db = createTxDatabase(opts.dbPath ?? "doge_headers.db");
     // db.prepare(`DELETE FROM txs`).run();
 
     for (const tx of opts.transactions) {
@@ -560,16 +574,28 @@ export function startCrossChainListeners(opts: {
     }
 
     const endpoint = zmqEndpoint;
-    const l1Promise = startL1Listener(db, endpoint, l1TargetHash).catch((e) => {
+
+    // Shared MultiBar to prevent bars overwriting each other
+    const bars = new cliProgress.MultiBar({
+        clearOnComplete: false,
+        hideCursor: true,
+        stopOnComplete: false,
+        stream: process.stderr,
+        noTTYOutput: true,
+        format: '{bar} {percentage}% | {value}/{total}'
+    }, cliProgress.Presets.shades_grey);
+
+    const l1Promise = startL1Listener(db, endpoint, l1TargetHash, bars).catch((e) => {
         Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         throw e;
     });
-    const l2Promise = startL2Listener(db, l2Rpc, moatAddress).catch((e) => {
+    const l2Promise = startL2Listener(db, l2Rpc, moatAddress, bars).catch((e) => {
         Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         throw e;
     });
 
     return Promise.all([l1Promise, l2Promise]).then(() => {
+        try { bars.stop(); } catch (_) {}
         Logger.info('[cross-chain] Both listeners finished. Executing statistic().');
         statistic(db);
     });
