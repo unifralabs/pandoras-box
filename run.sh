@@ -78,7 +78,7 @@ runERC721()
 
 
 runWithDrawal(){
-    rm -rf doge_headers.db
+    rm -rf doge.db
     export LOG_LEVEL=DEBUG
     ./bin/index.js -u "$RPC" -m "$MNEMONIC" \
     --fixed-gas-price \

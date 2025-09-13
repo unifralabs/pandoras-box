@@ -3,13 +3,13 @@
 yarn build
 rm -rf out/pandoras-box.log
 
-if [ -f doge_headers.db ]; then
-    mv doge_headers.db "$(date +%Y%m%d_%H%M%S)_doge_headers.db"
+if [ -f doge.db ]; then
+    mv doge.db "$(date +%Y%m%d_%H%M%S)_doge.db"
 fi
-transactions=10000
-batch=1
-subaccounts=50
-concurrency=1
+transactions=20000
+batch=300
+subaccounts=1000
+concurrency=100
 
 RPC="https://rpc.perf.unifra.xyz"
 zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
@@ -42,9 +42,10 @@ clearPending(){
 } 
 
 runWithDrawal(){
-    rm -rf doge_headers.db
+    rm -rf doge.db
     export LOG_LEVEL=INFO
     ./bin/index.js -u "$RPC" -m "$MNEMONIC" \
+    --tps 5000 \
     --fixed-gas-price \
     -t $transactions \
     -b $batch \

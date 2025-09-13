@@ -23,7 +23,8 @@ class Batcher {
         signedTxsByAccount: string[][],
         batchSize: number,
         url: string,
-        _concurrency?: number
+        _concurrency?: number,
+        tps?: number
     ): Promise<string[]> {
         const senderQueues = signedTxsByAccount;
 
@@ -53,6 +54,27 @@ class Batcher {
         const batchErrors: string[] = [];
 
         try {
+            // Optional global TPS limiter shared across all workers
+            const msPerTx = tps && tps > 0 ? 1000 / tps : undefined;
+            if (msPerTx) {
+                Logger.info(`Global TPS limit enabled: ~${(1000 / msPerTx).toFixed(0)} TPS`);
+            }
+            let nextSlot = Date.now();
+            const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+            // Serialize reservations to avoid race conditions between workers
+            let reservationChain: Promise<void> = Promise.resolve();
+            const reserveAndWait = async (tokens: number) => {
+                if (!msPerTx) return; // no throttling
+                reservationChain = reservationChain.then(async () => {
+                    const now = Date.now();
+                    const earliest = Math.max(now, nextSlot);
+                    const duration = tokens * msPerTx;
+                    nextSlot = earliest + duration;
+                    const waitMs = Math.max(0, earliest - now);
+                    if (waitMs > 0) await sleep(waitMs);
+                });
+                return reservationChain;
+            };
             const concurrency = _concurrency || senderQueues.length;
             const effectiveConcurrency = Math.min(
                 concurrency,
@@ -111,6 +133,8 @@ class Batcher {
                     const payload = `[${payloadItems.join(',')}]`;
 
                     try {
+                        // Apply global TPS throttle based on batch size (number of txs)
+                        await reserveAndWait(batch.length);
                         const resp = await axios({
                             url: url,
                             method: 'POST',

@@ -167,7 +167,7 @@ function parseDogeCoinTransactions(block: Buffer): ParsedTx[] {
  *
  * Then run this script with ts-node or after transpiling to JavaScript.
  */
-export function createTxDatabase(dbPath = "doge_headers.db"): DB {
+export function createTxDatabase(dbPath:string): DB {
     const db = new BetterSqlite3(dbPath);
     db.exec(
         `CREATE TABLE IF NOT EXISTS l1_headers (
@@ -564,7 +564,7 @@ export function startCrossChainListeners(opts: {
     transactions: TransactionRequest[]
 }): Promise<void> {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress } = opts;
-    const db = createTxDatabase(opts.dbPath ?? "doge_headers.db");
+    const db = createTxDatabase(opts.dbPath ?? "doge.db");
     // db.prepare(`DELETE FROM txs`).run();
 
     for (const tx of opts.transactions) {
@@ -763,7 +763,7 @@ if (require.main === module) {
         .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint', "tcp://10.8.0.25:30495")
         .option('--l2-rpc <url>', 'L2 RPC endpoint', "https://rpc.dg.unifra.xyz")
         .option('--moat-address <address>', 'Moat contract address', "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2")
-        .option('--db-path <path>', 'Path to SQLite database file', "doge_headers.db")
+        .option('--db-path <path>', 'Path to SQLite database file', "doge.db")
         .parse(process.argv);
 
     const options = program.opts();

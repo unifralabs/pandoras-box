@@ -1,1 +1,1 @@
-node -e "const m=require('./bin/tools/crossChainListeners.js'); const db=m.createTxDatabase('doge_headers.db'); m.statistic(db);"
+node -e "const m=require('./bin/tools/crossChainListeners.js'); const db=m.createTxDatabase('doge.db'); m.statistic(db);"

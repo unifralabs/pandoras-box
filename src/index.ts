@@ -99,6 +99,10 @@ async function run() {
             '-c, --concurrency <concurrency>',
             'The maximum number of concurrent batch requests'
         )
+        .option(
+            '--tps <tps>',
+            'Target transactions per second (TPS) across all workers'
+        )
         .parse();
 
     const options = program.opts();
@@ -111,6 +115,7 @@ async function run() {
     const batchSize = options.batch;
     const output = options.output;
     const concurrency = options.concurrency;
+    const tps = options.tps ? parseInt(options.tps, 10) : undefined;
     const numAccounts = parseInt(options.numAccounts, 10);
     const useFixedGasPrice = options.fixedGasPrice;
     const startIndex = parseInt(options.startIndex, 10);
@@ -228,7 +233,8 @@ async function run() {
             batchSize,
             mnemonic,
             url,
-            concurrency
+            concurrency,
+            tps
         )
     );
 

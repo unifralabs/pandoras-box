@@ -14,7 +14,7 @@ L1_TARGET_HASH="${L1_TARGET_HASH:-ef64172e434033c48104dd80f6bfb6f6d8bd5a99}"
 ZMQ_ENDPOINT="${ZMQ_ENDPOINT:-tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332}"
 L2_RPC="${L2_RPC:-https://rpc.perf.unifra.xyz}"
 MOAT_ADDRESS="${MOAT_ADDRESS:-0x8e7E0351b3F3342Df7Ba43Eb3d857fCEE675F90C}"
-DB_PATH="${DB_PATH:-doge_headers.db}"
+DB_PATH="${DB_PATH:-doge.db}"
 
 # Allow overriding via positional args for quick usage
 # Usage: ./run-listeners.sh <l1TargetHash> <zmqEndpoint> <l2Rpc> <moatAddress> <dbPath>

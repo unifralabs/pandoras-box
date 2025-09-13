@@ -12,6 +12,7 @@ class EngineContext {
     mnemonic: string;
     url: string;
     concurrency?: number;
+    tps?: number;
 
     constructor(
         accountIndexes: number[],
@@ -19,7 +20,8 @@ class EngineContext {
         batchSize: number,
         mnemonic: string,
         url: string,
-        concurrency?: number
+        concurrency?: number,
+        tps?: number
     ) {
         this.accountIndexes = accountIndexes;
         this.numTxs = numTxs;
@@ -28,6 +30,7 @@ class EngineContext {
         this.mnemonic = mnemonic;
         this.url = url;
         this.concurrency = concurrency ? Number.parseInt(concurrency as any, 10) : undefined;
+        this.tps = tps ? Number.parseInt(tps as any, 10) : undefined;
     }
 }
 
@@ -72,7 +75,8 @@ class Engine {
             signedTransactions,
             ctx.batchSize,
             ctx.url,
-            ctx.concurrency
+            ctx.concurrency,
+            ctx.tps
         );
     }
 }
