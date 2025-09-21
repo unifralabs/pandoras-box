@@ -15,6 +15,7 @@
         "@types/better-sqlite3": "^7.6.13",
         "@types/cli-progress": "^3.11.0",
         "@types/node": "^20.1.0",
+        "@types/pg": "^8.11.6",
         "@typescript-eslint/eslint-plugin": "^7.5.0",
         "@typescript-eslint/parser": "^7.5.0",
         "eslint": "^9.0.0",
@@ -22,7 +23,7 @@
         "eslint-plugin-prettier": "^5.1.3",
         "globals": "^15.0.0",
         "prettier": "3.2.5",
-        "typescript": "^5.0.2",
+        "typescript": "^5.9.2",
         "typescript-eslint": "^7.5.0"
     },
     "scripts": {
@@ -33,8 +34,8 @@
         "chmod": "chmod u+x ./bin/index.js",
         "prepare": "yarn build",
         "prepublishOnly": "yarn lint && yarn prettier",
-    "get-pending": "node bin/tools/getPendingCount.js",
-    "listeners": "node bin/tools/crossChainListeners.js"
+        "get-pending": "node bin/tools/getPendingCount.js",
+        "listeners": "node bin/tools/crossChainListeners.js"
     },
     "bin": {
         "pandoras-box": "./bin/index.js"
@@ -55,13 +56,17 @@
         "@types/heap": "^0.2.31",
         "axios": "^1.2.1",
         "better-sqlite3": "^12.2.0",
+        "bitcoinjs-lib": "^6.1.5",
         "bs58check": "^4.0.0",
         "chalk": "4.1.2",
         "cli-progress": "^3.12.0",
         "cli-table3": "^0.6.3",
         "commander": "^12.0.0",
+        "ecpair": "^3.0.0",
         "ethers": "^6.15.0",
         "heap": "^0.2.7",
+        "pg": "^8.12.0",
+        "tiny-secp256k1": "^2.2.4",
         "zeromq": "^6.5.0"
     },
     "repository": {

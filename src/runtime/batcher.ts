@@ -49,23 +49,26 @@ class Batcher {
         batchBar.start(totalBatches, 0, {
             speed: 'N/A',
         });
-
+ 
         const txHashes: string[] = [];
         const batchErrors: string[] = [];
-
+ 
         try {
-            // Optional global TPS limiter shared across all workers
-            const msPerTx = tps && tps > 0 ? 1000 / tps : undefined;
-            if (msPerTx) {
+            // Create a throttler function. If tps is not set, it does nothing.
+            const createThrottler = () => {
+                const msPerTx = tps && tps > 0 ? 1000 / tps : 0;
+                if (msPerTx <= 0) {
+                    Logger.info(`Global TPS limit disabled.`);
+                    return async (_tokens: number) => Promise.resolve(); // Return a no-op async function
+                }
+ 
                 Logger.info(`Global TPS limit enabled: ~${(1000 / msPerTx).toFixed(0)} TPS`);
-            }
-            let nextSlot = Date.now();
-            const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-            // Serialize reservations to avoid race conditions between workers
-            let reservationChain: Promise<void> = Promise.resolve();
-            const reserveAndWait = async (tokens: number) => {
-                if (!msPerTx) return; // no throttling
-                reservationChain = reservationChain.then(async () => {
+                let nextSlot = Date.now();
+                const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+                let reservationChain: Promise<void> = Promise.resolve();
+ 
+                return (tokens: number) => {
+                    reservationChain = reservationChain.then(async () => {
                     const now = Date.now();
                     const earliest = Math.max(now, nextSlot);
                     const duration = tokens * msPerTx;
@@ -73,8 +76,11 @@ class Batcher {
                     const waitMs = Math.max(0, earliest - now);
                     if (waitMs > 0) await sleep(waitMs);
                 });
-                return reservationChain;
+                    return reservationChain;
+                };
             };
+ 
+            const throttler = createThrottler();
             const concurrency = _concurrency || senderQueues.length;
             const effectiveConcurrency = Math.min(
                 concurrency,
@@ -106,7 +112,7 @@ class Batcher {
                     }
                 }
             }
-            
+
             // 3. Update the progress bar with the accurately calculated total number of batches.
             const totalBatches = allBatches.reduce((sum, workerBatches) => sum + workerBatches.length, 0);
             batchBar.start(totalBatches, 0, {
@@ -134,7 +140,7 @@ class Batcher {
 
                     try {
                         // Apply global TPS throttle based on batch size (number of txs)
-                        await reserveAndWait(batch.length);
+                        await throttler(batch.length);
                         const resp = await axios({
                             url: url,
                             method: 'POST',
@@ -166,11 +172,9 @@ class Batcher {
                         batchBar.increment();
                         let errorDetails = `Batch for worker #${workerId}: `;
                         if (err.response) {
-                            errorDetails += `HTTP ${
-                                err.response.status
-                            } - ${
-                                err.response.statusText
-                            } - ${JSON.stringify(err.response.data)}`;
+                            errorDetails += `HTTP ${err.response.status
+                                } - ${err.response.statusText
+                                } - ${JSON.stringify(err.response.data)}`;
                         } else if (err.request) {
                             errorDetails +=
                                 'Network error - no response received';

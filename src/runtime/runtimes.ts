@@ -10,6 +10,7 @@ export enum RuntimeType {
     CLEAR_PENDING = 'CLEAR_PENDING',
     GET_PENDING_COUNT = 'GET_PENDING_COUNT',
     WITHDRAWAL = 'WITHDRAWAL',
+    DEPOSIT = 'DEPOSIT',
 }
 
 export interface Runtime {
@@ -54,4 +55,4 @@ export interface TokenRuntime extends Runtime, InitializedRuntime {
     FundAccount(address: string, amount: number): Promise<void>;
 }
 
-export interface NFTRuntime extends Runtime, InitializedRuntime {}
+export interface NFTRuntime extends Runtime, InitializedRuntime { }

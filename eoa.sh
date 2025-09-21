@@ -3,10 +3,10 @@
 #yarn install
 yarn build
 echo ""> out/pandoras-box.log
-transactions=5000
+transactions=3000
 batch=300
-subaccounts=500
-concurrency=40
+subaccounts=2
+concurrency=100
 
 RPC="https://rpc.perf.unifra.xyz"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"

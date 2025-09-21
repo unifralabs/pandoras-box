@@ -6,17 +6,17 @@ rm -rf out/pandoras-box.log
 if [ -f doge.db ]; then
     mv doge.db "$(date +%Y%m%d_%H%M%S)_doge.db"
 fi
-transactions=20000
+transactions=2400
 batch=300
-subaccounts=1000
-concurrency=100
+subaccounts=300
+concurrency=200
 
 RPC="https://rpc.perf.unifra.xyz"
 zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467 This is the master address for the MNEMONIC; make sure it has enough coins to fund subaccounts
 
-MOAT_CONTRACT=0x8e7E0351b3F3342Df7Ba43Eb3d857fCEE675F90C
+MOAT_CONTRACT=0xF13cA52F8B7B2a208742Bab311bd5D50a775a4a9
 WITHDRAWAL_TARGET="njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF"
 
 out=latest
@@ -45,7 +45,6 @@ runWithDrawal(){
     rm -rf doge.db
     export LOG_LEVEL=INFO
     ./bin/index.js -u "$RPC" -m "$MNEMONIC" \
-    --tps 5000 \
     --fixed-gas-price \
     -t $transactions \
     -b $batch \

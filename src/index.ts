@@ -12,6 +12,7 @@ import ERC721Runtime from './runtime/erc721';
 import ClearPendingRuntime from './runtime/clearPendingRuntime';
 import GetPendingCountRuntime from './runtime/getPendingCountRuntime';
 import RuntimeErrors from './runtime/errors';
+import DepositRuntime from './runtime/deposit';
 import {
     InitializedRuntime,
     RuntimeType,
@@ -71,7 +72,7 @@ async function run() {
         )
         .option(
             '--mode <mode>',
-            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING, GET_PENDING_COUNT, WITHDRAWAL]',
+            'The mode for the stress test. Possible modes: [EOA, ERC20, ERC721, CLEAR_PENDING, GET_PENDING_COUNT, WITHDRAWAL, DEPOSIT]',
             'EOA'
         )
         .option(
@@ -103,6 +104,30 @@ async function run() {
             '--tps <tps>',
             'Target transactions per second (TPS) across all workers'
         )
+        .option(
+            '--l1-rpc-url <url>',
+            'L1 RPC URL for DEPOSIT mode'
+        )
+        .option(
+            '--db-url <url>',
+            'Database connection URL for DEPOSIT mode'
+        )
+        .option(
+            '--network <name>',
+            'Network name for DEPOSIT mode (e.g., "regtest")',
+            'regtest'
+        )
+        .option(
+            '--amount <satoshi>',
+            'Amount per deposit transaction in satoshi for DEPOSIT mode',
+            '10000'
+        )
+        .option(
+            '--deposit-target <address>',
+            'Target address for deposits in DEPOSIT mode'
+        ).option(
+            '--blockbook-url <url>', 'Blockbook URL for DEPOSIT mode'
+        )
         .parse();
 
     const options = program.opts();
@@ -124,6 +149,13 @@ async function run() {
     const moatAddress = options.moatAddress;
     const targetAddress = options.targetAddress || '0x000000000000000000000000000000000000dead';
     const dogeZmqEndpoint: string = options.dogeZmqEndpoint;
+    // DEPOSIT mode options
+    const l1RpcUrl = options.l1RpcUrl;
+    const dbUrl = options.dbUrl;
+    const network = options.network;
+    const amountPerTxInSatoshi = BigInt(options.amount);
+    const depositTarget = options.depositTarget;
+    const blockbookUrl = options.blockbookUrl;
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
@@ -135,7 +167,30 @@ async function run() {
     if (mode === RuntimeType.GET_PENDING_COUNT) {
         const getPendingCountRuntime = new GetPendingCountRuntime(url);
         await getPendingCountRuntime.run();
-        return; // Exit after getting the count
+        return;
+    } else if (mode === RuntimeType.DEPOSIT) {
+        const requiredOptions = { l1RpcUrl, mnemonic, dbUrl, depositTarget, blockbookUrl };
+        for (const [option, value] of Object.entries(requiredOptions)) {
+            if (!value) {
+                Logger.error(`Error: --${option.replace(/([A-Z])/g, '-$1').toLowerCase()} is required for DEPOSIT mode.`);
+                return;
+            }
+        }
+
+        const depositRuntime = new DepositRuntime(
+            l1RpcUrl,
+            url, // l2RpcUrl is the main --json-rpc
+            mnemonic,
+            transactionCount,
+            dbUrl,
+            network,
+            amountPerTxInSatoshi,
+            depositTarget,
+            blockbookUrl
+        );
+
+        await depositRuntime.run();
+        return;
     }
 
     if (mode === RuntimeType.CLEAR_PENDING) {

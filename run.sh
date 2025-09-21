@@ -3,10 +3,10 @@
 #yarn install
 #yarn build
 rm -rf out/pandoras-box.log
-transactions=5000
-batch=300
-subaccounts=200
-concurrency=100
+transactions=20000
+batch=200
+subaccounts=500
+concurrency=250
 
 RPC="https://rpc.perf.unifra.xyz"
 zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
@@ -93,17 +93,18 @@ runWithDrawal(){
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
 
-runWithDrawal
+#runWithDrawal
 
 #getPending
 #clearPending
 # exit 0
 
-#runEOA
+#clearPending
+runEOA
 # #getPending
 # exit 0
 
 # sleep 30
-# runERC20
+#runERC20
 
 #runERC721
