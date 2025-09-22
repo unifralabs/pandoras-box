@@ -7,6 +7,7 @@ import * as ecc from 'tiny-secp256k1';
 import { Client } from 'pg';
 import { SingleBar } from 'cli-progress';
 import { time } from 'console';
+import { create } from 'domain';
 
 // import { number } from 'bitcoinjs-lib/src/script'; // Removed unused import
 
@@ -34,7 +35,7 @@ const dogecoinTestNetwork = {
     wif: 0xf1,
 };
 
-const maxOutCount = 3;
+const maxOutCount = 2048;
 
 class DepositRuntime {
     private l1RpcUrl: string;
@@ -216,10 +217,17 @@ class DepositRuntime {
             receipts_root VARCHAR(66)
         );`;
 
+        const createRecordTable = `
+        CREATE TABLE IF NOT EXISTS record (
+            l1_start_test_height BIGINT,
+            l2_start_test_height BIGINT,
+            l1_processed_height BIGINT,
+            l2_processed_height BIGINT
+        );`;
+
         await this.dbClient.query(createTransactionsTable);
         await this.dbClient.query(createL2BlockHeadersTable);
-        await this.dbClient.query("delete from deposit_transactions;");
-        await this.dbClient.query("delete from l2_block_headers;");
+        await this.dbClient.query(createRecordTable);
 
         Logger.success('Database schema is ready.');
     }
@@ -249,6 +257,10 @@ class DepositRuntime {
 
     private async prepareUtxosForDeposit() {
         Logger.info('\n🔧 Preparing UTXOs for deposit...');
+
+        await this.dbClient.query("delete from deposit_transactions;");
+        await this.dbClient.query("delete from l2_block_headers;");
+        await this.dbClient.query("delete from record;");
 
         // 1. 从 dogecoin rpc 获取 master account 的 utxos
         Logger.info(`Fetching UTXOs for master account ${this.l1MasterAddress} from ${this.blockBookUrl}...`);
@@ -426,7 +438,7 @@ class DepositRuntime {
                 }
             } else {
                 let respose = JSON.stringify(response.data);
-                Logger.success(`transaction 0 success! ${txid0}, ${respose}`)
+                Logger.success(`transaction 0 success! https://sochain.com/tx/DOGETEST/${txid0}`)
                 break;
             }
         }
@@ -507,7 +519,7 @@ class DepositRuntime {
                     const rawHex2 = psbtDeposit.extractTransaction().toHex();
                     const txid2 = psbtDeposit.extractTransaction().getId();
                     this.dbClient.query(
-                        'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
+                        'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
                         [txid2, rawHex2, "deposit"]
                     );
                     this.dbClient.query("COMMIT");
@@ -557,8 +569,6 @@ class DepositRuntime {
 
     }
 
-
-
     private async l1RpcRequest(payload: any): Promise<any> {
         const url = new URL(this.l1RpcUrl);
         const auth = (url.username || url.password) ? {
@@ -603,10 +613,6 @@ class DepositRuntime {
 
     private async sendStressTransactions() {
         Logger.info('\n🚀 Sending stress transactions...');
-        // TODO: Implement the logic below
-
-        // 1. 记录 l1_start_test_height,l2_start_test_height
-        // TODO: Get L1 start height using Dogecoin RPC ('getblockcount')
         const l2StartHeight = await this.l2provider.getBlockNumber();
         const getblockcountReturn = await this.l1RpcRequest({
             jsonrpc: '1.0',
@@ -620,31 +626,68 @@ class DepositRuntime {
         }
         const l1StartHeight = getblockcountReturn.result;
         Logger.info(`Starting at L2 block height: ${l2StartHeight}, L1 block height: ${l1StartHeight}`);
+        //将 l1StartHeight 和  l2StartHeight 这 2 个数字存入数据库, 重启后可以接着索引区块
+
+        await this.dbClient.query(
+            "INSERT INTO record (l1_start_test_height, l2_start_test_height) VALUES ($1, $2)",
+            [l1StartHeight, l2StartHeight]);
 
         Logger.info(`Broadcasting ${this.txCount} transactions to L1...`);
 
         const res = await this.dbClient.query("SELECT * FROM deposit_transactions WHERE type='deposit';");
         const depositTxs = res.rows;
 
+
+        const depositBar = new SingleBar({
+            format: 'broadcast deposit [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} txs',
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+            hideCursor: true,
+        });
+        depositBar.start(depositTxs.length, 0);
+        let fail = 0;
+        let success = 0;
         for (const tx of depositTxs) {
             const result = await this.sendRawTransaction(tx.raw_hex);
             if (result && !result.error) {
                 Logger.debug(`Broadcasted deposit tx: ${tx.txid}`);
+                depositBar.increment()
+                await this.dbClient.query(
+                    'UPDATE deposit_transactions SET broadcast_at = $1 WHERE txid = $2',
+                    [Math.floor(Date.now() / 1000), tx.txid]);
+                success += 1;
             } else {
                 Logger.error(`Failed to broadcast tx: ${tx.txid} - ${result?.error?.message || 'Unknown error'}`);
+                fail += 1;
             }
-            await new Promise(resolve => setTimeout(resolve, 200)); // 恒定速率
+            await new Promise(resolve => setTimeout(resolve, 100));
         }
+        depositBar.stop();
 
-        Logger.success('All stress transactions have been broadcasted.');
+        Logger.success(`broadcast deposit transactions complete. success:${success}, fail: ${fail}`);
     }
 
     private async collectingBlockData() {
         Logger.info('\n📊 Collecting and processing block data...');
-        // TODO: Implement the logic below
+
+        const res = await this.dbClient.query("SELECT * FROM record limit 1;");
+        if (res.rowCount != 1) {
+            Logger.error("record table is empty!");
+            return;
+        }
+        const record = res.rows[0];
+        const l1_start_test_height = record.l1_start_test_height;
+        const l2_start_test_height = record.l2_start_test_height;
+        const l1_processed_height = record.l1_processed_height;
+        const l2_processed_height = record.l2_processed_height
+        let l1Height = l1_processed_height ?? l1_start_test_height;
+        let l2Height = l2_processed_height ?? l2_start_test_height;
+
+
 
         // 1. 从 l1_start_test_height 开始顺序获取每个l1区块h，解析出其中交易，如果交易的 txid 在transactions中，更新字段 l1_block_height=h
         // 2. 从 l2_start_test_height 开始顺序获取每个l2区块h, 将区块header存入表 l2_block_headers 中, 解析出其中交易，会得到 2 个字段，txid和 txhash。 如果交易的 txid 在transactions 中，更新其字段 l2_block_height=h
+
         Logger.info('Waiting for transactions to be included in L1 and L2 blocks...');
 
         Logger.success('Block data collection complete.');
@@ -671,7 +714,7 @@ if (require.main === module) {
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 7);
+        const txCount = Number(process.env.TX_COUNT || 107);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 210000000);
