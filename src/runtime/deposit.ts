@@ -121,7 +121,7 @@ class DepositRuntime {
     gasLimit             10000000000
     gasUsed              21000
     hash                 0xdb984d9acb7d5d37e7fe9beb8fe9d6c656b8ed7714d6e24b73273109e4d6b6cc
-    logsBloom            0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+    logsBloom            0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
     miner                0x0000000000000000000000000000000000000000
     mixHash              0x0000000000000000000000000000000000000000000000000000000000000000
     nonce                0x0000000000000000
@@ -324,8 +324,8 @@ class DepositRuntime {
         }
 
 
-        const consolidationTxCount = Math.ceil(this.txCount / maxOutCount);
-        Logger.info(`Creating ${consolidationTxCount} consolidation transactions to generate ${this.txCount} UTXOs...`);
+        // const consolidationTxCount = Math.ceil(this.txCount / maxOutCount);
+        // Logger.info(`Creating ${consolidationTxCount} consolidation transactions to generate ${this.txCount} UTXOs...`);
 
         utxos.sort((a: { amount: number; }, b: { amount: number; }) => {
             if (a.amount < b.amount) return 1;
@@ -333,38 +333,50 @@ class DepositRuntime {
             return 0;
         });
 
+        const totalOutputValue = this.amountPerTxInSatoshi * BigInt(this.txCount);
         let psbt = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 6000 });
-        //const txb = new bitcoin.Transaction()
-        let inputTotal = BigInt(0);
+        let sumInput = BigInt(0);
         for (const input of utxos) {
             psbt.addInput({
                 hash: input.txid,
                 index: input.vout,
                 nonWitnessUtxo: Buffer.from(txid2RawHex.get(input.txid) ?? '', 'hex')
             });
-            inputTotal += input.amount;
-            if (inputTotal > this.amountPerTxInSatoshi * BigInt(maxOutCount)) {
+            sumInput += input.amount;
+ 
+            // Estimate required input amount: total output value + fee per input (e.g., 100000 satoshis)
+            const requiredAmount = totalOutputValue + BigInt(psbt.inputCount) * BigInt(100000);
+            if (sumInput > requiredAmount) {
+                // Logger.success(`sumInput > tmp, ${sumInput} > ${tmp}`);
                 break;
             }
         }
         Logger.success("addInput done");
+        let sumOutNoChange = BigInt(0);
 
-        for (let i = 0; i < consolidationTxCount - 1; i++) {
-            psbt.addOutput(
-                {
+        let groups = [];
+        let groupAmount = BigInt(0);
+        let groupTxCount = 0;
+        for (let i = 0; i < this.txCount; i++) {
+            groupAmount += this.amountPerTxInSatoshi;
+            groupTxCount += 1;
+
+            if ((i + 1) % maxOutCount == 0 || i == this.txCount - 1) {
+                psbt.addOutput({
                     address: this.l1MasterAddress,
-                    value: Number(this.amountPerTxInSatoshi * BigInt(maxOutCount))
-                }
-            );
+                    value: Number(groupAmount)
+                });
+                sumOutNoChange += groupAmount;
+                groupAmount = BigInt(0);
+                groups.push(groupTxCount);
+                groupTxCount = 0;
+            }
         }
 
-        const sumOutNoChange = BigInt(this.txCount) * this.amountPerTxInSatoshi;
-        const lastOutputCount = (this.txCount % maxOutCount) || maxOutCount;
-        psbt.addOutput({
-            address: this.l1MasterAddress,
-            value: Number(this.amountPerTxInSatoshi * BigInt(lastOutputCount))
-        });
-
+        if (sumInput < sumOutNoChange) {
+            Logger.error("sumInput < sumOutNoChange");
+            throw new Error(`sumInput  (${sumInput} < sumOutNoChange ${sumOutNoChange})`);
+        }
         Logger.success("addOutput done");
 
         const masterKeyPair = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
@@ -376,7 +388,7 @@ class DepositRuntime {
         let psbtTmp = psbt.clone()
         psbtTmp.addOutput({
             address: this.l1MasterAddress,
-            value: Number(1)
+            value: Number(0)
         });
 
         for (let i = 0; i < psbt.inputCount; i++) {
@@ -392,11 +404,11 @@ class DepositRuntime {
         const txSize = tempTx.virtualSize();
 
         const estimatedFee = BigInt(txSize * feeRate);
-        const changeAmount = inputTotal - sumOutNoChange - estimatedFee;
+        const changeAmount = sumInput - sumOutNoChange - estimatedFee;
 
         Logger.info(`Estimated fee: ${estimatedFee}, Change amount: ${changeAmount}`);
 
-        if (changeAmount > 546) {
+        if (changeAmount > 100000) {
             psbt.addOutput({
                 address: this.l1MasterAddress,
                 value: Number(changeAmount)
@@ -454,7 +466,7 @@ class DepositRuntime {
                 sign: (hash: Buffer) => Buffer.from(agentKeyPair.sign(hash))
             };
 
-            for (let i = 0; i < consolidationTxCount; i++) {
+            for (let i = 0; i < groups.length; i++) {
                 Logger.success(`processing consolidation transaction:${i.toString()}`);
                 let psbtToAgent = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 50000000 });
 
@@ -464,11 +476,7 @@ class DepositRuntime {
                     nonWitnessUtxo: Buffer.from(rawHex0, "hex")
                 });
 
-                let planCount = maxOutCount;
-                if (i === consolidationTxCount - 1) {
-                    planCount = (this.txCount % maxOutCount) || maxOutCount;
-                }
-
+                let planCount = groups[i];
                 await this.dbClient.query("BEGIN");
                 let valueToAgent = Number(this.amountPerTxInSatoshi) - feePerOut;
                 for (let j = 0; j < planCount; j++) {
@@ -537,7 +545,7 @@ class DepositRuntime {
             barIncompleteChar: '\u2591',
             hideCursor: true,
         });
-        consolidationBar.start(consolidationTxCount, 0);
+        consolidationBar.start(groups.length, 0);
         while (txids.length > 0) {
             for (const txid of [...txids]) {
                 try {
@@ -714,10 +722,10 @@ if (require.main === module) {
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 107);
+        const txCount = Number(process.env.TX_COUNT || 10000);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
-        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 210000000);
+        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);
         const bridgeAddress = process.env.BRIDGE_ADDRESS || '2N7bYHnFeAbYSy7mxDssy7Kt7vrTbcV7iMn';
         const depositTargetAddress = process.env.DEPOSIT_TARGET_ADDRESS || '0xd98f41da0f5b229729ed7bf469ea55d98d11f467';
 
