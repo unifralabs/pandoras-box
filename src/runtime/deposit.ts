@@ -39,7 +39,8 @@ class DepositRuntime {
     private l1RpcUrl: string;
 
     private l2RpcUrl: string;
-    private wif: string;
+    private masterWif: string;
+    private agentWif: string;
     private txCount: number;
     private dbUrl: string;
     private network: string;
@@ -49,11 +50,13 @@ class DepositRuntime {
     private blockbookUrl: string;
     private dbClient: Client;
     private l1MasterAddress: string = '';
+    private l1AgentAddress: string = '';
 
     constructor(
         l1RpcUrl: string,
         l2RpcUrl: string,
-        wif: string,
+        masterWif: string,
+        agentWif: string,
         txCount: number,
         dbUrl: string,
         network: string,
@@ -63,7 +66,8 @@ class DepositRuntime {
     ) {
         this.l1RpcUrl = l1RpcUrl;
         this.l2RpcUrl = l2RpcUrl;
-        this.wif = wif;
+        this.masterWif = masterWif;
+        this.agentWif = agentWif
         this.txCount = txCount;
         this.dbUrl = dbUrl;
         this.network = network;
@@ -75,14 +79,25 @@ class DepositRuntime {
         this.dbClient = new Client({ connectionString: this.dbUrl });
 
         // Derive L1 master address from WIF
-        const ECPair = ECPairFactory.ECPairFactory(ecc);
-        const keyPair = ECPair.fromWIF(this.wif, dogecoinTestNetwork);
-        const { address } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(keyPair.publicKey), network: dogecoinTestNetwork });
-        if (!address) {
-            throw new Error('Could not derive L1 master address from WIF.');
+        {
+            const ECPair = ECPairFactory.ECPairFactory(ecc);
+            const keyPair = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
+            const { address } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(keyPair.publicKey), network: dogecoinTestNetwork });
+            if (!address) {
+                throw new Error('Could not derive L1 master address from WIF.');
+            }
+            this.l1MasterAddress = address;
+            Logger.info(`L1 Master Address: ${this.l1MasterAddress}`);
         }
-        this.l1MasterAddress = address;
-        Logger.info(`L1 Master Address: ${this.l1MasterAddress}`);
+        {
+            const keyPair2 = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
+            const { address } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(keyPair2.publicKey), network: dogecoinTestNetwork });
+            if (!address) {
+                throw new Error('Could not derive L1 master address from WIF.');
+            }
+            this.l1AgentAddress = address;
+            Logger.info(`L1 Agent Address: ${this.l1AgentAddress}`);
+        }
     }
     /*
     l1_header 表，有另外的服务负责创建和更新，本程序不需要处理
@@ -212,22 +227,19 @@ class DepositRuntime {
         // 1. 从 dogecoin rpc 获取 master account 的 utxos
         Logger.info(`Fetching UTXOs for master account ${this.l1MasterAddress} from ${this.l1RpcUrl}...`);
 
-        const payload = {
-            jsonrpc: '1.0',
-            id: 'pandoras-box-listunspent',
-            method: 'listunspent',
-            params: [
-                1, // minconf
-                999999999, // maxconf
-                [this.l1MasterAddress] // addresses
-            ],
-        };
-
         let utxos = [];
-
         let txid2RawHex = new Map<string, string>();
         try {
-            const data = await this.l1RpcRequest(payload);
+            const data = await this.l1RpcRequest({
+                jsonrpc: '1.0',
+                id: 'pandoras-box-listunspent',
+                method: 'listunspent',
+                params: [
+                    1, // minconf
+                    999999999, // maxconf
+                    [this.l1MasterAddress] // addresses
+                ],
+            });
             utxos = data.result;
             Logger.success(`Found ${utxos.length} UTXOs for the master account.`);
             utxos.forEach((utxo: any) => {
@@ -342,7 +354,7 @@ class DepositRuntime {
 
         let psbtTmp = psbt.clone()
         const ECPair = ECPairFactory.ECPairFactory(ecc);
-        const keyPair = ECPair.fromWIF(this.wif, dogecoinTestNetwork);
+        const keyPair = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
         for (let i = 0; i < psbt.inputCount; i++) {
             const keyPairBuffer = {
                 publicKey: Buffer.from(keyPair.publicKey),
@@ -383,13 +395,17 @@ class DepositRuntime {
         const rawHex0 = psbt.extractTransaction().toHex();
         const txid0 = psbt.extractTransaction().getId();
         Logger.success(`sending tx0 ${txid0}`);
+        let ret = await this.dbClient.query(
+            'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
+            [txid0, rawHex0, "consolidation", Math.floor(Date.now() / 1000)]
+        );
         this.sendRawTransaction(rawHex0);
 
         let startTime = new Date();
         while (true) {
             const data = await this.l1RpcRequest({
                 jsonrpc: '1.0',
-                id: Date().toString(),
+                id: Date.now(),
                 method: 'gettransaction',
                 params: [txid0],
             });
@@ -410,7 +426,7 @@ class DepositRuntime {
             }
         }
 
-
+        const feePerOut = 1000;
         try {
             Logger.info('Starting consolidation transaction insertions within a DB transaction.');
 
@@ -436,10 +452,12 @@ class DepositRuntime {
                     planCount = (this.txCount % maxOutCount) || maxOutCount;
                 }
 
+                await this.dbClient.query("BEGIN");
+                let value1 = Number(this.amountPerTxInSatoshi) - feePerOut;
                 for (let j = 0; j < planCount; j++) {
                     psbt.addOutput({
                         address: this.l1MasterAddress,
-                        value: Number(this.amountPerTxInSatoshi - BigInt(1000))
+                        value: value1
                     });
                 }
 
@@ -450,12 +468,35 @@ class DepositRuntime {
                 txids.push(txid);
                 let ret = await this.dbClient.query(
                     'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-                    [txid, rawHex, "consolidation", Math.floor(Date.now() / 1000)]
+                    [txid, rawHex, "splitting", Math.floor(Date.now() / 1000)]
                 );
                 if (ret.rowCount === 0) {
                     Logger.warn(`Transaction with txid ${txid} already exists, skipping insertion.`);
                 }
                 await this.sendRawTransaction(rawHex);
+
+                for (let j = 0; j < planCount; j++) {
+                    let psbt2 = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 5000 });
+                    psbt2.addInput({
+                        hash: txid,
+                        index: j,
+                        nonWitnessUtxo: Buffer.from(rawHex, "hex")
+                    });
+                    psbt2.addOutput({
+                        address: this.depositTarget,
+                        value: value1 - feePerOut
+                    });
+
+                    psbt2.signAllInputs(keyPairBuffer);
+                    psbt2.finalizeAllInputs();
+                    const rawHex2 = psbt2.extractTransaction().toHex();
+                    const txid2 = psbt2.extractTransaction().getId();
+                    this.dbClient.query(
+                        'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
+                        [txid2, rawHex2, "deposit"]
+                    );
+                    this.dbClient.query("COMMIT");
+                }
             }
             Logger.success('All consolidation transactions inserted and DB transaction committed.');
         } catch (error) {
@@ -471,22 +512,23 @@ class DepositRuntime {
         consolidationBar.start(consolidationTxCount, 0);
         while (txids.length > 0) {
             for (const txid of [...txids]) {
-                const payload = {
-                    jsonrpc: '1.0',
-                    id: Date().toString(),
-                    method: 'gettransaction',
-                    params: [txid],
-                };
                 try {
-                    this.l1RpcRequest(payload).then((data) => {
+                    this.l1RpcRequest({
+                        jsonrpc: '1.0',
+                        id: Date.now(),
+                        method: 'gettransaction',
+                        params: [txid],
+                    }).then((data) => {
                         // Remove txid from array if confirmed
                         const idx = txids.indexOf(txid);
+                        consolidationBar.increment();
                         if (idx !== -1) {
                             txids.splice(idx, 1);
-                            consolidationBar.increment();
                             this.dbClient.query(
                                 'UPDATE deposit_transactions SET l1_block_hash = $1 WHERE txid = $2',
                                 [data.result.blockhash, txid]);
+                        } else {
+                            Logger.error("txids not found");
                         }
                     });
                 } catch (error) {
@@ -495,6 +537,9 @@ class DepositRuntime {
             }
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
+        consolidationBar.stop();
+
+
 
     }
 
@@ -530,17 +575,15 @@ class DepositRuntime {
     }
 
     private async sendRawTransaction(rawHex: string) {
-        const payload = {
-            jsonrpc: '1.0',
-            id: Date().toString(),
-            method: 'sendrawtransaction',
-            params: [
-                rawHex
-            ],
-        };
-
         try {
-            return await this.l1RpcRequest(payload);
+            return await this.l1RpcRequest({
+                jsonrpc: '1.0',
+                id: Date.now(),
+                method: 'sendrawtransaction',
+                params: [
+                    rawHex
+                ],
+            });
         } catch (e) { return null; } // Maintain original behavior of returning null on error
     }
 
@@ -591,10 +634,10 @@ if (require.main === module) {
         const l1RpcUrl = process.env.L1_RPC_URL || 'http://gIiXOF7h:WxkMni1FAZc77cvZ@127.0.0.1:44555';
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const wif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
-        const txCount = Number(process.env.TX_COUNT || 90);
+        const txCount = Number(process.env.TX_COUNT || 16);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
-        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 200000000);
+        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 100000000000);
         const depositTarget = process.env.DEPOSIT_TARGET || 'nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH';
         const blockbookUrl = process.env.BLOCKBOOK_URL || '';
 
