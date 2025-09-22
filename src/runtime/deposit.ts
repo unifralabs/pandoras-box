@@ -1,28 +1,21 @@
 import { JsonRpcProvider } from '@ethersproject/providers';
 import Logger from '../logger/logger';
 import axios from 'axios';
+import { Interface } from '@ethersproject/abi';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ECPairFactory from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
 import { Client } from 'pg';
 import { SingleBar } from 'cli-progress';
-import { time } from 'console';
+
 import { create } from 'domain';
 
-// import { number } from 'bitcoinjs-lib/src/script'; // Removed unused import
-
-type VOUT = {
-    value: bigint;
-    scriptPubKey: string;
-};
-
-type VIN = {
-    txid: string;
-    vout: number;
-};
 const ECPair = ECPairFactory.ECPairFactory(ecc);
 
 const feeRate = 1000;
+const maxOutCount = 1024;
+const depositSize = 222;
+
 const dogecoinTestNetwork = {
     messagePrefix: '\x19Dogecoin Signed Message:\n',
     bech32: '', // Dogecoin does not use bech32, so set as empty string
@@ -35,7 +28,7 @@ const dogecoinTestNetwork = {
     wif: 0xf1,
 };
 
-const maxOutCount = 2048;
+
 
 class DepositRuntime {
     private l1RpcUrl: string;
@@ -102,50 +95,17 @@ class DepositRuntime {
             Logger.success(`L1 Agent Address: ${this.l1AgentAddress}`);
         }
     }
-    /*
-    l1_header 表，有另外的服务负责创建和更新，本程序不需要处理
-    CREATE TABLE IF NOT EXISTS l1_block_headers (
-    height BIGINT PRIMARY KEY,
-    hash VARCHAR(64) NOT NULL UNIQUE,
-    previous_hash VARCHAR(64) NOT NULL,
-    timestamp BIGINT NOT NULL,
-    created_at BIGINT NOT NULL DEFAULT (extract(epoch from now())::BIGINT),
-    size_bytes INTEGER DEFAULT 0,
-    tx_count INTEGER DEFAULT 0,
-    confirmations INTEGER DEFAULT 0
-  
-    l2_block_headers 表
-    baseFeePerGas        15680008
-    difficulty           1
-    extraData            0x
-    gasLimit             10000000000
-    gasUsed              21000
-    hash                 0xdb984d9acb7d5d37e7fe9beb8fe9d6c656b8ed7714d6e24b73273109e4d6b6cc
-    logsBloom            0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-    miner                0x0000000000000000000000000000000000000000
-    mixHash              0x0000000000000000000000000000000000000000000000000000000000000000
-    nonce                0x0000000000000000
-    number               85872
-    parentHash           0x80c5b71841f328f72999f65d98aa401a7ceba7f159aa0edbe1f4f3b7a3a66dae
-    transactionsRoot     0x3687f1f5e5420cca893f679ca739f2fc4c75431d376bbd91e7cedcca60f4faed
-    receiptsRoot         0xf78dfb743fbd92ade140711c8bbc542b5e307f0ab7984eff35d751969fe57efa
-    sha3Uncles           0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347
-    size                 703
-    stateRoot            0xcb1aa561c6a07b5fa8e45b5559a54efa824f9ddce3234a717e543975f912ba92
-    timestamp            1758429082
-    withdrawalsRoot      
-    totalDifficulty      85873
-    blobGasUsed          
-    excessBlobGas        
-    requestsHash         
-    */
 
-
-    public async run() {
+    public async test() {
+        let txData = "0x8ef1332e000000000000000000000000a23a6fddbffc07b01e41338346909800b373073e00000000000000000000000077fb799081cce110772aac512a883980f947258d0000000000000000000000000000000000000000000000001bd983c7125bc00000000000000000000000000000000000000000000000000000000000000010dc00000000000000000000000000000000000000000000000000000000000000a0000000000000000000000000000000000000000000000000000000000000004454c2bb4d000000000000000000000000d98f41da0f5b229729ed7bf469ea55d98d11f467a23a6fddbffc07b01e41338346909800b373073e770fd8202150a22f82c862fb00000000000000000000000000000000000000000000000000000000";
+        this.processTxData("111111", txData, 1, null);
+    }
+    public async run(step: number) {
 
         Logger.title('🔍 Starting Deposit Stress Test 🔍');
 
         try {
+
             // 1. 连接并检查所有服务
             Logger.info(`Connecting to database at ${this.dbUrl}...`);
             await this.dbClient.connect();
@@ -159,16 +119,21 @@ class DepositRuntime {
             Logger.info(`Checking L2 RPC connection at ${this.l2RpcUrl}...`);
             await this.l2provider.getNetwork();
             Logger.success('L2 RPC connection successful.');
+            if (step == 0) {
+                // 2. 准备 UTXOs
+                await this.prepareUtxosForDeposit();
+                step += 1;
+            }
 
-            // 2. 准备 UTXOs
-            await this.prepareUtxosForDeposit();
+            if (step == 1) {
+                // 3. 发送压力测试交易
+                await this.sendStressTransactions();
+                step += 1;
+            }
 
-            // 3. 发送压力测试交易
-            await this.sendStressTransactions();
-
-            // 4. 收集并处理区块数据
-            await this.collectingBlockData();
-
+            if (step == 2) {
+                await this.collectingBlockData();
+            }
             // 5. 生成并显示报告
             await this.report();
 
@@ -343,7 +308,7 @@ class DepositRuntime {
                 nonWitnessUtxo: Buffer.from(txid2RawHex.get(input.txid) ?? '', 'hex')
             });
             sumInput += input.amount;
- 
+
             // Estimate required input amount: total output value + fee per input (e.g., 100000 satoshis)
             const requiredAmount = totalOutputValue + BigInt(psbt.inputCount) * BigInt(100000);
             if (sumInput > requiredAmount) {
@@ -408,7 +373,7 @@ class DepositRuntime {
 
         Logger.info(`Estimated fee: ${estimatedFee}, Change amount: ${changeAmount}`);
 
-        if (changeAmount > 100000) {
+        if (changeAmount > 1000000) {
             psbt.addOutput({
                 address: this.l1MasterAddress,
                 value: Number(changeAmount)
@@ -455,8 +420,8 @@ class DepositRuntime {
             }
         }
 
-        const feePerOut = 10000;
-        const depositSize = 222;
+
+
         try {
             Logger.info('Starting consolidation transaction insertions within a DB transaction.');
             let txids: string[] = [];
@@ -477,8 +442,9 @@ class DepositRuntime {
                 });
 
                 let planCount = groups[i];
-                await this.dbClient.query("BEGIN");
-                let valueToAgent = Number(this.amountPerTxInSatoshi) - feePerOut;
+
+                const feePerOut = 100000;
+                let valueToAgent = Number(this.amountPerTxInSatoshi) - Math.round((planCount + 1) * feePerOut / planCount);
                 for (let j = 0; j < planCount; j++) {
                     psbtToAgent.addOutput({
                         address: this.l1AgentAddress,
@@ -491,6 +457,8 @@ class DepositRuntime {
                 const rawHex = psbtToAgent.extractTransaction().toHex();
                 const txid = psbtToAgent.extractTransaction().getId();
                 txids.push(txid);
+
+                await this.dbClient.query("BEGIN");
                 let ret = await this.dbClient.query(
                     'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
                     [txid, rawHex, "splitting", Math.floor(Date.now() / 1000)]
@@ -498,8 +466,6 @@ class DepositRuntime {
                 if (ret.rowCount === 0) {
                     Logger.warn(`Transaction with txid ${txid} already exists, skipping insertion.`);
                 }
-                await this.sendRawTransaction(rawHex);
-
                 for (let j = 0; j < planCount; j++) {
                     let psbtDeposit = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 50000000 });
                     psbtDeposit.addInput({
@@ -530,9 +496,9 @@ class DepositRuntime {
                         'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
                         [txid2, rawHex2, "deposit"]
                     );
-                    this.dbClient.query("COMMIT");
-                    //this.sendRawTransaction(rawHex2);
                 }
+                this.dbClient.query("COMMIT");
+                await this.sendRawTransaction(rawHex);
             }
             Logger.success('All consolidation transactions inserted and DB transaction committed.');
         } catch (error) {
@@ -642,7 +608,7 @@ class DepositRuntime {
 
         Logger.info(`Broadcasting ${this.txCount} transactions to L1...`);
 
-        const res = await this.dbClient.query("SELECT * FROM deposit_transactions WHERE type='deposit';");
+        const res = await this.dbClient.query("SELECT * FROM deposit_transactions WHERE type='deposit' AND broadcast_at IS NULL;");
         const depositTxs = res.rows;
 
 
@@ -668,11 +634,97 @@ class DepositRuntime {
                 Logger.error(`Failed to broadcast tx: ${tx.txid} - ${result?.error?.message || 'Unknown error'}`);
                 fail += 1;
             }
-            await new Promise(resolve => setTimeout(resolve, 100));
+            //   await new Promise(resolve => setTimeout(resolve, 100));
         }
         depositBar.stop();
 
         Logger.success(`broadcast deposit transactions complete. success:${success}, fail: ${fail}`);
+    }
+
+    private async processTxData(txHash: string, txData: string, l2Height: number, dbClient: Client | null) {
+        const handleL1MessageABI = [{
+            "inputs": [
+                {
+                    "internalType": "address",
+                    "name": "_target",
+                    "type": "address"
+                },
+                {
+                    "internalType": "bytes32",
+                    "name": "_depositID",
+                    "type": "bytes32"
+                }
+            ],
+            "name": "handleL1Message",
+            "outputs": [],
+            "stateMutability": "payable",
+            "type": "function"
+        }];
+        const handleL1MessageIface = new Interface(handleL1MessageABI);
+        const relayMessageABI = [{
+            "inputs": [
+                {
+                    "internalType": "address",
+                    "name": "_from",
+                    "type": "address"
+                },
+                {
+                    "internalType": "address",
+                    "name": "_to",
+                    "type": "address"
+                },
+                {
+                    "internalType": "uint256",
+                    "name": "_value",
+                    "type": "uint256"
+                },
+                {
+                    "internalType": "uint256",
+                    "name": "_nonce",
+                    "type": "uint256"
+                },
+                {
+                    "internalType": "bytes",
+                    "name": "_message",
+                    "type": "bytes"
+                }
+            ],
+            "name": "relayMessage",
+            "outputs": [],
+            "stateMutability": "nonpayable",
+            "type": "function"
+        }];
+        const relayMessageIface = new Interface(relayMessageABI);
+
+        const RELAY_MESSAGE_SELECTOR = relayMessageIface.getSighash("relayMessage");
+        const handleL1Message_SELECTOR = handleL1MessageIface.getSighash("handleL1Message");
+
+        if (txData.startsWith(RELAY_MESSAGE_SELECTOR)) {
+            try {
+                const decodedData = relayMessageIface.parseTransaction({ data: txData });
+                // The _message parameter from relayMessage contains the calldata for handleL1Message
+                const message = decodedData.args._message;
+                if (!message.startsWith(handleL1Message_SELECTOR)) {
+                    Logger.info("start not handleL1Message_SELECTOR");
+                    return;
+                }
+                const decodedMessage = handleL1MessageIface.parseTransaction({ data: message });
+                // ethers.js's Interface decodes bytes32 as a hex string with a "0x" prefix.
+                const depositID = decodedMessage.args._depositID; // e.g., '0x...'
+                if (depositID && depositID.length === 66) {
+                    const l1Txid = depositID.substring(2).toLowerCase();
+                    Logger.success(`l1Txid=${l1Txid}, l2Height=${l2Height}`);
+                    if (dbClient) {
+                        await dbClient.query(
+                            'UPDATE deposit_transactions SET l2_block_height = $1, l2_txhash = $2 WHERE txid = $3 AND l2_block_height IS NULL',
+                            [l2Height, txHash, l1Txid]
+                        );
+                    }
+                }
+            } catch (e: any) {
+                Logger.warn(`[L2 Processor] Failed to parse relayMessage transaction ${txHash}: ${e.message}`);
+            }
+        }
     }
 
     private async collectingBlockData() {
@@ -691,12 +743,108 @@ class DepositRuntime {
         let l1Height = l1_processed_height ?? l1_start_test_height;
         let l2Height = l2_processed_height ?? l2_start_test_height;
 
-
-
-        // 1. 从 l1_start_test_height 开始顺序获取每个l1区块h，解析出其中交易，如果交易的 txid 在transactions中，更新字段 l1_block_height=h
-        // 2. 从 l2_start_test_height 开始顺序获取每个l2区块h, 将区块header存入表 l2_block_headers 中, 解析出其中交易，会得到 2 个字段，txid和 txhash。 如果交易的 txid 在transactions 中，更新其字段 l2_block_height=h
-
         Logger.info('Waiting for transactions to be included in L1 and L2 blocks...');
+
+        const processL1Blocks = async () => {
+            Logger.info(`[L1 Processor] Starting from block ${l1Height}.`);
+            while (true) {
+                try {
+                    const { result: count } = await this.l1RpcRequest({ method: 'getblockcount', params: [] });
+                    if (l1Height > count) {
+                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for new blocks
+                        continue;
+                    }
+
+                    const { result: hash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
+                    const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [hash, 2] });
+
+                    if (block && block.tx) {
+                        for (const tx of block.tx) {
+                            await this.dbClient.query(
+                                'UPDATE deposit_transactions SET l1_block_height = $1, l1_block_hash = $2 WHERE txid = $3 AND l1_block_height IS NULL',
+                                [l1Height, hash, tx.txid]
+                            );
+                        }
+                    }
+
+                    await this.dbClient.query('UPDATE record SET l1_processed_height = $1', [l1Height]);
+                    l1Height++;
+
+                    const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
+                    if (parseInt(rows[0].count, 10) === 0) {
+                        Logger.success('[L1 Processor] All deposit transactions found on L1. Finishing.');
+                        return;
+                    }
+
+                } catch (error: any) {
+                    Logger.error(`[L1 Processor] Error processing block ${l1Height}: ${error.message}`);
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
+                }
+            }
+        };
+
+        const processL2Blocks = async () => {
+            Logger.info(`[L2 Processor] Starting from block ${l2Height}.`);
+
+
+            while (true) {
+                try {
+                    const currentBlockNumber = await this.l2provider.getBlockNumber();
+                    if (l2Height > currentBlockNumber) {
+                        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for new L2 blocks
+                        continue;
+                    }
+
+                    const block = await this.l2provider.getBlockWithTransactions(l2Height);
+                    if (block) {
+                        await this.dbClient.query(
+                            `INSERT INTO l2_block_headers (height, hash, parent_hash, timestamp, base_fee_per_gas, gas_limit, gas_used, miner, state_root, transactions_root, receipts_root)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (height) DO NOTHING`,
+                            [
+                                block.number,
+                                block.hash,
+                                block.parentHash,
+                                block.timestamp,
+                                block.baseFeePerGas?.toString(),
+                                block.gasLimit.toString(),
+                                block.gasUsed.toString(),
+                                block.miner,
+                                "",
+                                "",
+                                "",
+                            ]
+                        );
+
+
+                        for (const tx of block.transactions) {
+                            this.processTxData(tx.hash, tx.data, l2Height, this.dbClient);
+                        }
+                    }
+
+                    await this.dbClient.query('UPDATE record SET l2_processed_height = $1', [l2Height]);
+                    l2Height++;
+
+                    const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NULL");
+                    if (parseInt(rows[0].count, 10) === 0) {
+                        Logger.success('[L2 Processor] All deposit transactions processed on L2. Finishing.');
+                        return;
+                    }
+
+                } catch (error: any) {
+                    Logger.error(`[L2 Processor] Error processing block ${l2Height}: ${error.message}`);
+                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
+                }
+            }
+        };
+
+        try {
+            await Promise.all([
+                processL1Blocks(),
+                processL2Blocks()
+            ]);
+        } catch (error: any) {
+            Logger.error(`An error occurred during block processing: ${error.message}`);
+        }
 
         Logger.success('Block data collection complete.');
     }
@@ -741,6 +889,8 @@ if (require.main === module) {
             bridgeAddress,
             depositTargetAddress,
         );
-        await runtime.run();
+        await runtime.run(0);
+        //await runtime.test();
+
     })();
 }
