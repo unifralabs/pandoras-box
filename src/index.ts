@@ -181,12 +181,13 @@ async function run() {
             l1RpcUrl,
             url, // l2RpcUrl is the main --json-rpc
             mnemonic,
+            "agentWif",
             transactionCount,
             dbUrl,
             network,
             amountPerTxInSatoshi,
-            depositTarget,
-            blockbookUrl
+            "bridgeAddress",
+            depositTarget
         );
 
         await depositRuntime.run();

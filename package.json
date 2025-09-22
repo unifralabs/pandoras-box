@@ -35,7 +35,8 @@
         "prepare": "yarn build",
         "prepublishOnly": "yarn lint && yarn prettier",
         "get-pending": "node bin/tools/getPendingCount.js",
-        "listeners": "node bin/tools/crossChainListeners.js"
+        "listeners": "node bin/tools/crossChainListeners.js",
+        "run:deposit": "npx ts-node src/runtime/deposit.ts"
     },
     "bin": {
         "pandoras-box": "./bin/index.js"
