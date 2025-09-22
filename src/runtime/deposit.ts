@@ -45,12 +45,13 @@ class DepositRuntime {
     private dbUrl: string;
     private network: string;
     private amountPerTxInSatoshi: bigint;
-    private depositTarget: string;
+    private bridgeAddress: string;
     private l2provider: JsonRpcProvider;
-    private blockbookUrl: string;
     private dbClient: Client;
     private l1MasterAddress: string = '';
     private l1AgentAddress: string = '';
+    private depositTargetAddress: string = '';
+
 
     constructor(
         l1RpcUrl: string,
@@ -61,8 +62,8 @@ class DepositRuntime {
         dbUrl: string,
         network: string,
         amountPerTxInSatoshi: bigint,
-        depositTarget: string,
-        blockbookUrl: string
+        bridgeAddress: string,
+        depositTargetAddress: string
     ) {
         this.l1RpcUrl = l1RpcUrl;
         this.l2RpcUrl = l2RpcUrl;
@@ -72,31 +73,31 @@ class DepositRuntime {
         this.dbUrl = dbUrl;
         this.network = network;
         this.amountPerTxInSatoshi = amountPerTxInSatoshi;
-        this.depositTarget = depositTarget;
-        this.blockbookUrl = blockbookUrl;
+        this.bridgeAddress = bridgeAddress;
+        this.depositTargetAddress = depositTargetAddress;
 
         this.l2provider = new JsonRpcProvider(l2RpcUrl);
         this.dbClient = new Client({ connectionString: this.dbUrl });
 
+        const ECPair = ECPairFactory.ECPairFactory(ecc);
         // Derive L1 master address from WIF
         {
-            const ECPair = ECPairFactory.ECPairFactory(ecc);
             const keyPair = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
             const { address } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(keyPair.publicKey), network: dogecoinTestNetwork });
             if (!address) {
                 throw new Error('Could not derive L1 master address from WIF.');
             }
             this.l1MasterAddress = address;
-            Logger.info(`L1 Master Address: ${this.l1MasterAddress}`);
+            Logger.success(`L1 Master Address: ${this.l1MasterAddress}`);
         }
         {
-            const keyPair2 = ECPair.fromWIF(this.masterWif, dogecoinTestNetwork);
+            const keyPair2 = ECPair.fromWIF(this.agentWif, dogecoinTestNetwork);
             const { address } = bitcoin.payments.p2pkh({ pubkey: Buffer.from(keyPair2.publicKey), network: dogecoinTestNetwork });
             if (!address) {
-                throw new Error('Could not derive L1 master address from WIF.');
+                throw new Error('Could not derive agent address from WIF.');
             }
             this.l1AgentAddress = address;
-            Logger.info(`L1 Agent Address: ${this.l1AgentAddress}`);
+            Logger.success(`L1 Agent Address: ${this.l1AgentAddress}`);
         }
     }
     /*
@@ -216,6 +217,8 @@ class DepositRuntime {
 
         await this.dbClient.query(createTransactionsTable);
         await this.dbClient.query(createL2BlockHeadersTable);
+        await this.dbClient.query("delete from deposit_transactions;");
+        await this.dbClient.query("delete from l2_block_headers;");
 
         Logger.success('Database schema is ready.');
     }
@@ -456,7 +459,7 @@ class DepositRuntime {
                 let value1 = Number(this.amountPerTxInSatoshi) - feePerOut;
                 for (let j = 0; j < planCount; j++) {
                     psbt.addOutput({
-                        address: this.l1MasterAddress,
+                        address: this.l1AgentAddress,
                         value: value1
                     });
                 }
@@ -476,21 +479,31 @@ class DepositRuntime {
                 await this.sendRawTransaction(rawHex);
 
                 for (let j = 0; j < planCount; j++) {
-                    let psbt2 = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 5000 });
-                    psbt2.addInput({
+                    let psbtDeposit = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 5000 });
+                    psbtDeposit.addInput({
                         hash: txid,
                         index: j,
                         nonWitnessUtxo: Buffer.from(rawHex, "hex")
                     });
-                    psbt2.addOutput({
-                        address: this.depositTarget,
-                        value: value1 - feePerOut
+                    psbtDeposit.addOutput({
+                        address: this.bridgeAddress,
+                        value: value1 - feePerOut * 2
+                    });
+                    //OP_RETURN
+                    const data = Buffer.from(this.depositTargetAddress.toLowerCase().replace(/^0x/, ''), 'hex');
+                    const embed = bitcoin.payments.embed({ data: [data] });
+                    if (!embed.output) {
+                        throw new Error('Could not create OP_RETURN script.');
+                    }
+                    psbtDeposit.addOutput({
+                        script: embed.output,
+                        value: 0, // OP_RETURN outputs must have a value of 0
                     });
 
-                    psbt2.signAllInputs(keyPairBuffer);
-                    psbt2.finalizeAllInputs();
-                    const rawHex2 = psbt2.extractTransaction().toHex();
-                    const txid2 = psbt2.extractTransaction().getId();
+                    psbtDeposit.signAllInputs(keyPairBuffer);
+                    psbtDeposit.finalizeAllInputs();
+                    const rawHex2 = psbtDeposit.extractTransaction().toHex();
+                    const txid2 = psbtDeposit.extractTransaction().getId();
                     this.dbClient.query(
                         'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
                         [txid2, rawHex2, "deposit"]
@@ -538,8 +551,6 @@ class DepositRuntime {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         consolidationBar.stop();
-
-
 
     }
 
@@ -633,24 +644,26 @@ if (require.main === module) {
         // TODO: Replace these with your actual test parameters
         const l1RpcUrl = process.env.L1_RPC_URL || 'http://gIiXOF7h:WxkMni1FAZc77cvZ@127.0.0.1:44555';
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
-        const wif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
+        const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
+        const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
         const txCount = Number(process.env.TX_COUNT || 16);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
-        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 100000000000);
-        const depositTarget = process.env.DEPOSIT_TARGET || 'nmNf4f5kyvCFrfyUBoQU3TKN3Dyc5kcMoH';
-        const blockbookUrl = process.env.BLOCKBOOK_URL || '';
+        const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 210000000);
+        const bridgeAddress = process.env.BRIDGE_ADDRESS || '2N7bYHnFeAbYSy7mxDssy7Kt7vrTbcV7iMn';
+        const depositTargetAddress = process.env.DEPOSIT_TARGET_ADDRESS || '';
 
         const runtime = new DepositRuntime(
             l1RpcUrl,
             l2RpcUrl,
-            wif,
+            masterWif,
+            agentWif,
             txCount,
             dbUrl,
             network,
             amountPerTxInSatoshi,
-            depositTarget,
-            blockbookUrl
+            bridgeAddress,
+            depositTargetAddress,
         );
         await runtime.run();
     })();
