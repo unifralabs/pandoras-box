@@ -28,7 +28,14 @@ const dogecoinTestNetwork = {
     wif: 0xf1,
 };
 
-
+type Utxo = {
+    txid: string;
+    vout: number;
+    value: string;
+    height: number;
+    confirmations: number;
+    amount: bigint;
+};
 
 class DepositRuntime {
     private l1RpcUrl: string;
@@ -108,7 +115,7 @@ class DepositRuntime {
             Logger.info(`Connecting to database at ${this.dbUrl}...`);
             await this.dbClient.connect();
             Logger.success('Database connection successful.');
-            await this.initializeDbSchema();
+
 
             Logger.info(`Checking L1 RPC connection at ${this.l1RpcUrl}...`);
             await this.l1RpcRequest({ jsonrpc: '1.0', id: 'pandoras-box-l1-check', method: 'getblockchaininfo', params: [] });
@@ -118,6 +125,7 @@ class DepositRuntime {
             await this.l2provider.getNetwork();
             Logger.success('L2 RPC connection successful.');
             if (step == 0) {
+                await this.initializeDbSchema();
                 await this.prepareUtxosForDeposit();
                 step += 1;
             }
@@ -186,6 +194,7 @@ class DepositRuntime {
             l2_processed_height BIGINT
         );`;
 
+        await this.dbClient.query(`ALTER TABLE IF EXISTS deposit_transactions RENAME TO deposit_transactions_${Date.now()};`);
         await this.dbClient.query(createTransactionsTable);
         await this.dbClient.query(createL2BlockHeadersTable);
         await this.dbClient.query(createRecordTable);
@@ -199,11 +208,7 @@ class DepositRuntime {
         try {
             const response = await axios.get(url);
             if (response.data && Array.isArray(response.data)) {
-                return response.data.map((utxo: any) => ({
-                    txid: utxo.txid,
-                    vout: utxo.vout,
-                    amount: BigInt(utxo.value), // value is already in satoshis
-                }));
+                return response.data;
             }
             return [];
         } catch (error: any) {
@@ -218,22 +223,26 @@ class DepositRuntime {
 
     private async prepareUtxosForDeposit() {
         Logger.info('\n🔧 Preparing UTXOs for deposit...');
-
-        await this.dbClient.query("delete from deposit_transactions;");
         await this.dbClient.query("delete from l2_block_headers;");
         await this.dbClient.query("delete from record;");
 
         // 1. 从 dogecoin rpc 获取 master account 的 utxos
         Logger.info(`Fetching UTXOs for master account ${this.l1MasterAddress} from ${this.blockBookUrl}...`);
 
-        let utxos: any[] = [];
+        let allUtxos: any[] = [];
+        let utxos: Utxo[] = [];
         let txid2RawHex = new Map<string, string>();
         try {
-            utxos = await this.queryUtxos(this.l1MasterAddress);
-            Logger.success(`Found ${utxos.length} UTXOs for the master account.`);
-            utxos.forEach((utxo: any) => {
-                txid2RawHex.set(utxo.txid, "");
+            allUtxos = await this.queryUtxos(this.l1MasterAddress);
+            Logger.success(`Found ${allUtxos.length} UTXOs for the master account.`);
+            allUtxos.forEach((utxo: any) => {
+                if (utxo.confirmations > 0) {
+                    utxo.amount = BigInt(utxo.value);
+                    utxos.push(utxo);
+                    txid2RawHex.set(utxo.txid, "");
+                }
             });
+            Logger.success(`allUtxos:${allUtxos.length}, confirmed:${utxos.length}`)
         } catch (error: any) {
             // Error is already logged in queryUtxos, just rethrow.
             throw error;
@@ -241,7 +250,7 @@ class DepositRuntime {
 
         let balance = BigInt(0);
         for (const utxo of utxos) {
-            balance += utxo.amount;
+            balance += (utxo.amount);
         }
         if (balance < this.amountPerTxInSatoshi * BigInt(this.txCount)) {
             let errorMessage = "master address balance is not enough";
@@ -284,18 +293,14 @@ class DepositRuntime {
             throw new Error(errorMessage);
         }
 
-
-        // const consolidationTxCount = Math.ceil(this.txCount / maxOutCount);
-        // Logger.info(`Creating ${consolidationTxCount} consolidation transactions to generate ${this.txCount} UTXOs...`);
-
-        utxos.sort((a: { amount: number; }, b: { amount: number; }) => {
+        utxos.sort((a, b) => {
             if (a.amount < b.amount) return 1;
             if (a.amount > b.amount) return -1;
             return 0;
         });
 
         const totalOutputValue = this.amountPerTxInSatoshi * BigInt(this.txCount);
-        let psbt = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 6000 });
+        let psbt = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 100000000 });
         let sumInput = BigInt(0);
         for (const input of utxos) {
             psbt.addInput({
@@ -416,9 +421,10 @@ class DepositRuntime {
             }
         }
 
+        let toAgentTxIds: string[] = [];
         try {
             Logger.info('Starting consolidation transaction insertions within a DB transaction.');
-            let txids: string[] = [];
+
             const agentKeyPair = ECPair.fromWIF(this.agentWif, dogecoinTestNetwork);
             const agentKeyPairBuffer = {
                 publicKey: Buffer.from(agentKeyPair.publicKey),
@@ -437,7 +443,7 @@ class DepositRuntime {
 
                 let planCount = groups[i];
 
-                const feePerOut = 100000;
+                const feePerOut = 1000000;
                 let valueToAgent = Number(this.amountPerTxInSatoshi) - Math.round((planCount + 1) * feePerOut / planCount);
                 for (let j = 0; j < planCount; j++) {
                     psbtToAgent.addOutput({
@@ -448,24 +454,24 @@ class DepositRuntime {
 
                 psbtToAgent.signAllInputs(masterKeyPairBuffer);
                 psbtToAgent.finalizeAllInputs();
-                const rawHex = psbtToAgent.extractTransaction().toHex();
-                const txid = psbtToAgent.extractTransaction().getId();
-                txids.push(txid);
+                const rawHexToAgent = psbtToAgent.extractTransaction().toHex();
+                const txidToAgent = psbtToAgent.extractTransaction().getId();
+                toAgentTxIds.push(txidToAgent);
 
                 await this.dbClient.query("BEGIN");
                 let ret = await this.dbClient.query(
                     'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-                    [txid, rawHex, "splitting", Math.floor(Date.now() / 1000)]
+                    [txidToAgent, rawHexToAgent, "splitting", Math.floor(Date.now() / 1000)]
                 );
                 if (ret.rowCount === 0) {
-                    Logger.warn(`Transaction with txid ${txid} already exists, skipping insertion.`);
+                    Logger.warn(`Transaction with txid ${txidToAgent} already exists, skipping insertion.`);
                 }
                 for (let j = 0; j < planCount; j++) {
                     let psbtDeposit = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 50000000 });
                     psbtDeposit.addInput({
-                        hash: txid,
+                        hash: txidToAgent,
                         index: j,
-                        nonWitnessUtxo: Buffer.from(rawHex, "hex")
+                        nonWitnessUtxo: Buffer.from(rawHexToAgent, "hex")
                     });
                     psbtDeposit.addOutput({
                         address: this.bridgeAddress,
@@ -492,7 +498,16 @@ class DepositRuntime {
                     );
                 }
                 this.dbClient.query("COMMIT");
-                await this.sendRawTransaction(rawHex);
+
+                for (let t = 0; t < 5; t++) {
+                    try {
+                        let ret = await this.sendRawTransaction(rawHexToAgent);
+                        break;
+                    }
+                    catch (err) {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
             }
             Logger.success('All consolidation transactions inserted and DB transaction committed.');
         } catch (error) {
@@ -506,44 +521,37 @@ class DepositRuntime {
             hideCursor: true,
         });
 
-        const totalTxs = txids.length;
+        const totalTxs = toAgentTxIds.length;
         let confirmedCount = 0;
         let failedCount = 0;
         consolidationBar.start(totalTxs, 0, { confirmed: 0, failed: 0 });
 
-        while (txids.length > 0) {
-            // Create a batch of promises to execute for the current set of txids
-            const promises = [];
-            for (const txid of [...txids]) {
-                const promise = this.l1RpcRequest({
-                    jsonrpc: '1.0',
-                    id: Date.now().toString(),
-                    method: 'gettransaction',
-                    params: [txid],
-                }).then((data) => {
-                    // On success, remove from the list and update DB
-                    const idx = txids.indexOf(txid);
-                    if (idx !== -1) {
-                        txids.splice(idx, 1);
-                        confirmedCount++;
-                        this.dbClient.query(
-                            'UPDATE deposit_transactions SET l1_block_hash = $1 WHERE txid = $2',
-                            [data.result.blockhash, txid]);
+        while (toAgentTxIds.length > 0) {
+            const confirmationsThreshold = 1;
+            for (const txid of [...toAgentTxIds]) {
+                try {
+                    const url = `${this.blockBookUrl}/tx/${txid}`;
+                    const response = await axios.get(url);
+                    let data = response.data;
+
+                    const confirmations = data.confirmations;
+                    if (typeof confirmations === 'number' && confirmations >= confirmationsThreshold) {
+                        const idx = toAgentTxIds.indexOf(txid);
+                        if (idx !== -1) {
+                            toAgentTxIds.splice(idx, 1);
+                            confirmedCount++;
+                            await this.dbClient.query(
+                                'UPDATE deposit_transactions SET l1_block_hash = $1, l1_block_height=$2 WHERE txid = $3',
+                                [data.blockHash, data.blockHeight, txid]);
+                        }
+                    } else {
+                        Logger.info(`Transaction ${txid} confirmations: ${confirmations} <${confirmationsThreshold}, waiting...`);
                     }
-                }).catch((error) => {
-                    // On failure, just log it. The txid will remain in the array for the next retry.
-                    Logger.debug(`Failed to get transaction ${txid}: ${error.message}`);
-                });
-                promises.push(promise);
+                } catch (error: any) {
+                    Logger.info(`Failed to get transaction ${txid}: ${error.message}`);
+                }
+                consolidationBar.update(confirmedCount, { confirmed: confirmedCount, failed: toAgentTxIds.length });
             }
-
-            // Wait for all requests in this batch to settle
-            await Promise.allSettled(promises);
-
-            // Update progress bar with the latest counts
-            const processedCount = confirmedCount + failedCount; // `failedCount` is not incremented here, as we retry.
-            consolidationBar.update(confirmedCount, { confirmed: confirmedCount, failed: totalTxs - txids.length - confirmedCount });
-
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         consolidationBar.stop();
@@ -557,26 +565,11 @@ class DepositRuntime {
             password: url.password
         } : undefined;
         const axiosUrl = `${url.protocol}//${url.host}${url.pathname}`;
-
-        try {
-            const response = await axios.post(axiosUrl, payload, {
-                headers: { 'Content-Type': 'application/json' },
-                auth: auth,
-            });
-
-            // Handle single request error
-            if (!Array.isArray(response.data) && response.data.error) {
-                throw new Error(`RPC error: ${response.data.error.message} (Code: ${response.data.error.code})`);
-            }
-            return response.data;
-        } catch (error: any) {
-            let errorMessage = `L1 RPC request failed: ${error.message}`;
-            if (error.response) {
-                errorMessage += ` - ${JSON.stringify(error.response.data)}`;
-            }
-            Logger.error(errorMessage);
-            throw new Error(errorMessage);
-        }
+        const response = await axios.post(axiosUrl, payload, {
+            headers: { 'Content-Type': 'application/json' },
+            auth: auth,
+        });
+        return response.data;
     }
 
     private async sendRawTransactions(rawHexs: string[]) {
@@ -589,24 +582,17 @@ class DepositRuntime {
                 id: Date.now().toString()
             });
         }
-        try {
-            return await this.l1RpcRequest(paylod);
-        }
-        catch (e) {
-            return null;
-        }
+        return await this.l1RpcRequest(paylod);
     }
     private async sendRawTransaction(rawHex: string) {
-        try {
-            return await this.l1RpcRequest({
-                jsonrpc: '1.0',
-                id: Date.now().toString(), // JSON-RPC 1.0 spec requires id to be a string, number, or null.
-                method: 'sendrawtransaction',
-                params: [
-                    rawHex
-                ],
-            });
-        } catch (e) { return null; } // Maintain original behavior of returning null on error
+        return await this.l1RpcRequest({
+            jsonrpc: '1.0',
+            id: Date.now().toString(), // JSON-RPC 1.0 spec requires id to be a string, number, or null.
+            method: 'sendrawtransaction',
+            params: [
+                rawHex
+            ],
+        });
     }
 
     private async sendStressTransactions() {
@@ -789,35 +775,84 @@ class DepositRuntime {
 
         Logger.info('Waiting for transactions to be included in L1 and L2 blocks...');
 
-        const processL1Blocks = async () => {
+        // 主线程创建 MultiBar
+        const multibar = new MultiBar({
+            clearOnComplete: false,
+            hideCursor: true,
+            format: '{bar} | {name} | {value}/{total} | ETA: {eta}s',
+            stream: process.stderr
+        });
 
+        // L1 进度条
+        const l1BlockBar = multibar.create(1, 0, {
+            name: "Scan L1 Blocks ",
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+        });
+        const l1TxBar = multibar.create(1, 0, {
+            name: "include L1 tx ",
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+        });
+
+
+        // L2 进度条
+        const { rows: l2TotalRows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit'");
+        const totalDeposits = parseInt(l2TotalRows[0].count, 10);
+        const l2blockBar = multibar.create(1, 0, {
+            name: "Scan L2 Blocks ",
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+        });
+        const l2TxBar = multibar.create(totalDeposits, 0, {
+            name: "Found Deposits ",
+            barCompleteChar: '\u2588',
+            barIncompleteChar: '\u2591',
+        });
+
+        const processL1Blocks = async (l1BlockBar: any, l1TxBar: any) => {
             l1Height = parseInt(l1Height);
+
+            const { rows } = await this.dbClient.query("SELECT COUNT(*) AS total FROM deposit_transactions WHERE type='deposit'");
+            let totalTx = parseInt(rows[0].total, 10);
+            l1TxBar.setTotal(totalTx);
+            {
+                const { rows } = await this.dbClient.query("SELECT COUNT(*) AS success FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NOT NULL");
+                l1TxBar.update(parseInt(rows[0].success, 10));
+            }
             while (true) {
+
                 try {
-                    const { result: count } = await this.l1RpcRequest({ method: 'getblockcount', params: [] });
-                    if (l1Height > count) {
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for new blocks
-                        continue;
-                    }
+                    const { result: latestHeight } = await this.l1RpcRequest({ method: 'getblockcount', params: [] });
 
-                    const { result: hash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
-                    const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [hash, 2] });
+                    l1BlockBar.setTotal(latestHeight);
+                    l1BlockBar.update(l1Height);
+                    Logger.info(`[L1 Processor] indexing ${l1Height}`);
+                    const { result: indexingHash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
+                    const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [indexingHash, 2] });
 
+                    this.dbClient.query("BEGIN;");
                     if (block && block.tx) {
-                        for (const tx of block.tx) {
-                            await this.dbClient.query(
+                        for (const txid of block.tx) {
+                            Logger.info(`txid=${txid},l1Height=${l1Height},indexingHash=${indexingHash}`);
+                            const result = await this.dbClient.query(
                                 'UPDATE deposit_transactions SET l1_block_height = $1, l1_block_hash = $2 WHERE txid = $3 AND l1_block_height IS NULL',
-                                [l1Height, hash, tx.txid]
+                                [l1Height, indexingHash, txid]
                             );
+                            const updatedCount = result.rowCount;
+                            l1TxBar.increment(updatedCount);
                         }
                     }
-
                     await this.dbClient.query('UPDATE record SET l1_processed_height = $1', [l1Height]);
+                    this.dbClient.query("COMMIT;");
+                    Logger.info(`[L1 Processor] indexed ${l1Height}`);
                     l1Height++;
+                    l1BlockBar.update(l1Height);
 
-                    const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
-                    if (parseInt(rows[0].count, 10) === 0) {
-                        Logger.debug('[L1 Processor] All deposit transactions found on L1. Finishing.');
+                    const { rows } = await this.dbClient.query("SELECT COUNT(*) AS pending FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
+                    if (parseInt(rows[0].pending, 10) === 0) {
+                        Logger.info('[L1 Processor] All deposit transactions found on L1. Finishing.');
+                        l1BlockBar.stop();
                         return;
                     }
 
@@ -828,37 +863,14 @@ class DepositRuntime {
             }
         };
 
-        const processL2Blocks = async () => {
+        const processL2Blocks = async (l2blockBar: any, l2TxBar: any) => {
             l2Height = parseInt(l2Height);
-
-
-            const multibar = new MultiBar({
-                clearOnComplete: false,
-                hideCursor: true,
-                format: '{bar} | {name} | {value}/{total} | ETA: {eta}s',
-                stream: process.stderr
-            });
-
-            const l2blockBar = multibar.create(1, 0, {
-                name: "Scan L2 Blocks ",
-                barCompleteChar: '\u2588',
-                barIncompleteChar: '\u2591',
-            });
-
-            const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit'");
-            const totalDeposits = parseInt(rows[0].count, 10);
-            const l2TxBar = multibar.create(totalDeposits, 0, {
-                name: "Found Deposits ",
-                barCompleteChar: '\u2588',
-                barIncompleteChar: '\u2591',
-            });
-
             while (true) {
                 const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NULL");
                 let pending = parseInt(rows[0].count, 10);
-                // Logger.info(`pending=${pending}`);
-
                 if (pending === 0) {
+                    l2blockBar.stop();
+                    l2TxBar.stop();
                     multibar.stop();
                     Logger.success('[L2 Processor] All deposit transactions processed on L2. Finishing.');
                     break;
@@ -913,8 +925,8 @@ class DepositRuntime {
             Logger.info(`[L1 Processor] Starting from block ${l1Height}.`);
             Logger.debug(`[L2 Processor] Starting from block ${l2Height}.`);
             await Promise.all([
-                processL1Blocks(),
-                processL2Blocks()
+                processL1Blocks(l1BlockBar, l1TxBar),
+                processL2Blocks(l2blockBar, l2TxBar)
             ]);
         } catch (error: any) {
             Logger.error(`An error occurred during block processing: ${error.message}`);
@@ -937,29 +949,39 @@ class DepositRuntime {
 export default DepositRuntime;
 // Standalone test entry
 if (require.main === module) {
+    const DogeOsTestNet = {
+        l2RpcUrl: "https://rpc.testnet.dogeos.com",
+        bridgeAddress: "2Mu6Pi8NATjSRCW6DTcrCRXhZQiVSL4z7ak"
+    };
+    const perfNet = {
+        l2RpcUrl: "https://rpc.perf.unifra.xyz",
+        bridgeAddress: "2N7bYHnFeAbYSy7mxDssy7Kt7vrTbcV7iMn"
+    };
+
+    let config = perfNet;
+
     (async () => {
         // TODO: Replace these with your actual test parameters
         const l1RpcUrl = process.env.L1_RPC_URL || 'https://gIiXOF7h:WxkMni1FAZc77cvZ@dogecoin.perf.unifra.xyz';
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 1000);
+        const txCount = Number(process.env.TX_COUNT || 2000);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);
-        const bridgeAddress = process.env.BRIDGE_ADDRESS || '2N7bYHnFeAbYSy7mxDssy7Kt7vrTbcV7iMn';
         const depositTargetAddress = process.env.DEPOSIT_TARGET_ADDRESS || '0xd98f41da0f5b229729ed7bf469ea55d98d11f467';
 
         const runtime = new DepositRuntime(
             l1RpcUrl,
-            l2RpcUrl,
+            config.l2RpcUrl,
             masterWif,
             agentWif,
             txCount,
             dbUrl,
             network,
             amountPerTxInSatoshi,
-            bridgeAddress,
+            config.bridgeAddress,
             depositTargetAddress,
         );
         await runtime.run(2);
