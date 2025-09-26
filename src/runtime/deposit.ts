@@ -127,7 +127,12 @@ class DepositRuntime {
             if (step == 0) {
                 await this.initializeDbSchema();
                 await this.prepareUtxosForDeposit();
-                step += 1;
+                step = 1;
+            }
+
+            if (step == 255) {
+                await this.useAgentUtxo();
+                step = 1;
             }
 
             if (step == 1) {
@@ -145,14 +150,11 @@ class DepositRuntime {
         } catch (error: any) {
             Logger.error('An error occurred during the deposit stress test:');
             Logger.error(error.message);
-            if (error.stack) {
-                Logger.debug(error.stack);
-            }
         } finally {
-            if (this.dbClient) {
-                await this.dbClient.end();
-                Logger.info('Database connection closed.');
-            }
+        }
+        if (this.dbClient) {
+            await this.dbClient.end();
+            Logger.info('Database connection closed.');
         }
     }
 
@@ -218,6 +220,104 @@ class DepositRuntime {
             }
             Logger.error(errorMessage);
             throw new Error(errorMessage);
+        }
+    }
+
+    private async useAgentUtxo() {
+        Logger.info('\n🔧 useAgentUtxo for deposit...');
+        await this.dbClient.query("delete from l2_block_headers;");
+        await this.dbClient.query("delete from record;");
+
+        let allUtxos: any[] = [];
+        let validUtxos: Utxo[] = [];
+        let txid2RawHex = new Map<string, string>();
+        try {
+            allUtxos = await this.queryUtxos(this.l1AgentAddress);
+
+            allUtxos.forEach((utxo: any) => {
+                if (utxo.confirmations > 0 && BigInt(utxo.value) > 1e8) {
+                    utxo.amount = BigInt(utxo.value);
+                    validUtxos.push(utxo);
+                    txid2RawHex.set(utxo.txid, "");
+                }
+            });
+            Logger.success(`agent allUtxos:${allUtxos.length}, valid:${validUtxos.length}`);
+        } catch (error: any) {
+            // Error is already logged in queryUtxos, just rethrow.
+            throw error;
+        }
+
+        let payload2 = [];
+        let txids = [];
+        for (const [txid, w] of txid2RawHex) {
+            payload2.push(
+                {
+                    jsonrpc: '1.0',
+                    id: 'pandoras-box-listunspent',
+                    method: 'getrawtransaction',
+                    params: [txid]
+                }
+            );
+            txids.push(txid)
+        }
+
+        try {
+            const results = await this.l1RpcRequest(payload2);
+            if (txids.length != results.length) {
+                // This check might be incorrect if the RPC returns a single error object instead of an array of results/errors
+                Logger.error("txids.length != results.length");
+            }
+            for (let i = 0; i < txids.length; i++) {
+                if (results[i].error != null) {
+                    Logger.error(`txid=${txids[i]} fetch rawHex fail.`);
+                    continue;
+                }
+                txid2RawHex.set(txids[i], results[i].result)
+            }
+        } catch (error: any) {
+            let errorMessage = `Failed to fetch rawhex: ${error.message}`;
+            if (error.response) {
+                errorMessage += ` - ${JSON.stringify(error.response.data)}`;
+            }
+            Logger.error(errorMessage);
+            throw new Error(errorMessage);
+        }
+
+        const agentKeyPair = ECPair.fromWIF(this.agentWif, dogecoinTestNetwork);
+        const agentKeyPairBuffer = {
+            publicKey: Buffer.from(agentKeyPair.publicKey),
+            sign: (hash: Buffer) => Buffer.from(agentKeyPair.sign(hash))
+        };
+        for (const input of validUtxos) {
+            let psbtDeposit = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 100000000 });
+            psbtDeposit.addInput({
+                hash: input.txid,
+                index: input.vout,
+                nonWitnessUtxo: Buffer.from(txid2RawHex.get(input.txid) ?? '', 'hex')
+            });
+            psbtDeposit.addOutput({
+                address: this.bridgeAddress,
+                value: Number(input.amount) - depositSize * feeRate
+            });
+            //OP_RETURN
+            const data = Buffer.from(this.depositTargetAddress.toLowerCase().replace(/^0x/, '00'), 'hex');
+            const embed = bitcoin.payments.embed({ data: [data] });
+            if (!embed.output) {
+                throw new Error('Could not create OP_RETURN script.');
+            }
+            psbtDeposit.addOutput({
+                script: embed.output,
+                value: 0, // OP_RETURN outputs must have a value of 0
+            });
+
+            psbtDeposit.signAllInputs(agentKeyPairBuffer);
+            psbtDeposit.finalizeAllInputs();
+            const rawHexDeposit = psbtDeposit.extractTransaction().toHex();
+            const txidDeposit = psbtDeposit.extractTransaction().getId();
+            this.dbClient.query(
+                'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
+                [txidDeposit, rawHexDeposit, "deposit"]
+            );
         }
     }
 
@@ -300,10 +400,10 @@ class DepositRuntime {
         });
 
         const totalOutputValue = this.amountPerTxInSatoshi * BigInt(this.txCount);
-        let psbt = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 100000000 });
+        let psbt0 = new bitcoin.Psbt({ network: dogecoinTestNetwork, maximumFeeRate: 100000000 });
         let sumInput = BigInt(0);
         for (const input of utxos) {
-            psbt.addInput({
+            psbt0.addInput({
                 hash: input.txid,
                 index: input.vout,
                 nonWitnessUtxo: Buffer.from(txid2RawHex.get(input.txid) ?? '', 'hex')
@@ -311,7 +411,7 @@ class DepositRuntime {
             sumInput += input.amount;
 
             // Estimate required input amount: total output value + fee per input (e.g., 100000 satoshis)
-            const requiredAmount = totalOutputValue + BigInt(psbt.inputCount) * BigInt(100000);
+            const requiredAmount = totalOutputValue + BigInt(psbt0.inputCount) * BigInt(100000);
             if (sumInput > requiredAmount) {
                 // Logger.success(`sumInput > tmp, ${sumInput} > ${tmp}`);
                 break;
@@ -328,7 +428,7 @@ class DepositRuntime {
             groupTxCount += 1;
 
             if ((i + 1) % maxOutCount == 0 || i == this.txCount - 1) {
-                psbt.addOutput({
+                psbt0.addOutput({
                     address: this.l1MasterAddress,
                     value: Number(groupAmount)
                 });
@@ -351,13 +451,13 @@ class DepositRuntime {
             sign: (hash: Buffer) => Buffer.from(masterKeyPair.sign(hash))
         };
 
-        let psbtTmp = psbt.clone()
+        let psbtTmp = psbt0.clone()
         psbtTmp.addOutput({
             address: this.l1MasterAddress,
             value: Number(0)
         });
 
-        for (let i = 0; i < psbt.inputCount; i++) {
+        for (let i = 0; i < psbt0.inputCount; i++) {
             psbtTmp.signInput(i, masterKeyPairBuffer);
         }
         Logger.success("simulate signInput done");
@@ -375,26 +475,38 @@ class DepositRuntime {
         Logger.info(`Estimated fee: ${estimatedFee}, Change amount: ${changeAmount}`);
 
         if (changeAmount > 1000000) {
-            psbt.addOutput({
+            psbt0.addOutput({
                 address: this.l1MasterAddress,
                 value: Number(changeAmount)
             });
         }
 
-        for (let i = 0; i < psbt.inputCount; i++) {
-            psbt.signInput(i, masterKeyPairBuffer);
+        for (let i = 0; i < psbt0.inputCount; i++) {
+            psbt0.signInput(i, masterKeyPairBuffer);
         }
-        psbt.finalizeAllInputs();
+        psbt0.finalizeAllInputs();
 
 
-        const rawHex0 = psbt.extractTransaction().toHex();
-        const txid0 = psbt.extractTransaction().getId();
-        Logger.info(`sending tx0 ${txid0}`);
+        const rawHex0 = psbt0.extractTransaction().toHex();
+        const txid0 = psbt0.extractTransaction().getId();
+        Logger.info(`sending tx0 ${txid0}, ${rawHex0}`);
         let ret = await this.dbClient.query(
             'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
             [txid0, rawHex0, "consolidation", Math.floor(Date.now() / 1000)]
         );
-        this.sendRawTransaction(rawHex0);
+        try {
+            await this.l1RpcRequest({
+                jsonrpc: '1.0',
+                id: Date.now().toString(),
+                method: 'sendrawtransaction',
+                params: [rawHex0]
+            });
+        }
+        catch (error: any) {
+            Logger.error(`sending tx0 failed ${txid0},error=${error}`);
+            return false;
+        }
+
         /////////////////////////////////////////////////////////////////////////////////////////////////////////
         let startTime = new Date();
         while (true) {
@@ -498,15 +610,21 @@ class DepositRuntime {
                     );
                 }
                 this.dbClient.query("COMMIT");
-
-                for (let t = 0; t < 5; t++) {
+                let t = 0;
+                const maxTrySend = 5;
+                for (t = 0; t < maxTrySend; t++) {
                     try {
                         let ret = await this.sendRawTransaction(rawHexToAgent);
+                        Logger.success(`sendRawTransaction, txidToAgent=${txidToAgent}`);
                         break;
                     }
-                    catch (err) {
+                    catch (err: any) {
+                        Logger.error(`sendRawTransaction fail,error=${err.toString()}`)
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
+                }
+                if (t == maxTrySend) {
+                    Logger.error(`sendRawTransaction after ${maxTrySend} times failed, txidToAgent=${txidToAgent}`);
                 }
             }
             Logger.success('All consolidation transactions inserted and DB transaction committed.');
@@ -516,8 +634,8 @@ class DepositRuntime {
 
         const consolidationBar = new SingleBar({
             format: 'Consolidating [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} | Confirmed: {confirmed} | Failed: {failed}',
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
             hideCursor: true,
         });
 
@@ -555,7 +673,7 @@ class DepositRuntime {
             await new Promise(resolve => setTimeout(resolve, 1000));
         }
         consolidationBar.stop();
-
+        return true;
     }
 
     private async l1RpcRequest(payload: any): Promise<any> {
@@ -584,6 +702,7 @@ class DepositRuntime {
         }
         return await this.l1RpcRequest(paylod);
     }
+
     private async sendRawTransaction(rawHex: string) {
         return await this.l1RpcRequest({
             jsonrpc: '1.0',
@@ -622,8 +741,8 @@ class DepositRuntime {
 
         const depositBar = new SingleBar({
             format: 'broadcast deposit [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} txs',
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
             hideCursor: true,
         });
         depositBar.start(depositTxs.length, 0);
@@ -786,13 +905,13 @@ class DepositRuntime {
         // L1 进度条
         const l1BlockBar = multibar.create(1, 0, {
             name: "Scan L1 Blocks ",
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
         });
         const l1TxBar = multibar.create(1, 0, {
             name: "include L1 tx ",
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
         });
 
 
@@ -801,13 +920,13 @@ class DepositRuntime {
         const totalDeposits = parseInt(l2TotalRows[0].count, 10);
         const l2blockBar = multibar.create(1, 0, {
             name: "Scan L2 Blocks ",
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
         });
         const l2TxBar = multibar.create(totalDeposits, 0, {
             name: "Found Deposits ",
-            barCompleteChar: '\u2588',
-            barIncompleteChar: '\u2591',
+            barCompleteChar: '+',
+            barIncompleteChar: '.',
         });
 
         const processL1Blocks = async (l1BlockBar: any, l1TxBar: any) => {
@@ -829,12 +948,12 @@ class DepositRuntime {
                     l1BlockBar.update(l1Height);
                     Logger.info(`[L1 Processor] indexing ${l1Height}`);
                     const { result: indexingHash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
-                    const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [indexingHash, 2] });
+                    const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [indexingHash, 1] });
 
                     this.dbClient.query("BEGIN;");
                     if (block && block.tx) {
                         for (const txid of block.tx) {
-                            Logger.info(`txid=${txid},l1Height=${l1Height},indexingHash=${indexingHash}`);
+                            // Logger.info(`txid=${txid}, txid.toString()=${txid.toString()}},l1Height=${l1Height},indexingHash=${indexingHash}`);
                             const result = await this.dbClient.query(
                                 'UPDATE deposit_transactions SET l1_block_height = $1, l1_block_hash = $2 WHERE txid = $3 AND l1_block_height IS NULL',
                                 [l1Height, indexingHash, txid]
@@ -955,7 +1074,7 @@ if (require.main === module) {
     };
     const perfNet = {
         l2RpcUrl: "https://rpc.perf.unifra.xyz",
-        bridgeAddress: "2N7bYHnFeAbYSy7mxDssy7Kt7vrTbcV7iMn"
+        bridgeAddress: "2NCYvqi3LG8zg5eVQcpDmXaHvBvk6UwxbHt"
     };
 
     let config = perfNet;
@@ -966,7 +1085,7 @@ if (require.main === module) {
         const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 2000);
+        const txCount = Number(process.env.TX_COUNT || 12000);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);
@@ -984,8 +1103,7 @@ if (require.main === module) {
             config.bridgeAddress,
             depositTargetAddress,
         );
-        await runtime.run(2);
-        //await runtime.test();
+        await runtime.run(255);
 
     })();
 }
