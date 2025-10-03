@@ -1082,7 +1082,6 @@ if (require.main === module) {
     (async () => {
         // TODO: Replace these with your actual test parameters
         const l1RpcUrl = process.env.L1_RPC_URL || 'https://gIiXOF7h:WxkMni1FAZc77cvZ@dogecoin.perf.unifra.xyz';
-        const l2RpcUrl = process.env.L2_RPC_URL || 'https://rpc.perf.unifra.xyz';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
         const txCount = Number(process.env.TX_COUNT || 12000);
