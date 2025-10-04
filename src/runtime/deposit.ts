@@ -53,7 +53,7 @@ class DepositRuntime {
     private l1MasterAddress: string = '';
     private l1AgentAddress: string = '';
     private depositTargetAddress: string = '';
-    private blockBookUrl = "https://blockbook.perf.unifra.xyz/api/";
+    private blockBookUrl = "https://blockbook.qiaoxiaorui.org/api/";
 
     constructor(
         l1RpcUrl: string,
@@ -146,7 +146,7 @@ class DepositRuntime {
 
             await this.report();
 
-            Logger.success('\n✅ Deposit stress test finished successfully.');
+            Logger.success('\n Deposit stress test finished successfully.');
         } catch (error: any) {
             Logger.error('An error occurred during the deposit stress test:');
             Logger.error(error.message);
@@ -207,17 +207,51 @@ class DepositRuntime {
     private async queryUtxos(address: string): Promise<any[]> {
         // this.blockbookUrl+`/v2/utxo/${address}`
         const url = `${this.blockBookUrl}/v2/utxo/${address}`;
+        Logger.info(`🌐 Requesting blockbook API: ${url}`);
+        
         try {
-            const response = await axios.get(url);
+            const startTime = Date.now();
+            const response = await axios.get(url, {
+                timeout: 30000, // 30 second timeout
+                headers: {
+                    'User-Agent': 'pandoras-box/1.0',
+                    'Accept': 'application/json'
+                }
+            });
+            const duration = Date.now() - startTime;
+            Logger.success(` Blockbook API responded in ${duration}ms with status ${response.status}`);
+            
             if (response.data && Array.isArray(response.data)) {
+                Logger.info(`📊 Received ${response.data.length} UTXOs from blockbook`);
                 return response.data;
             }
+            Logger.warn(`⚠️ Unexpected response format from blockbook: ${typeof response.data}`);
             return [];
         } catch (error: any) {
+            const duration = Date.now() - Date.now();  // This will be 0, but keeping for consistency
+            Logger.error(`❌ Blockbook API request failed after ${duration}ms`);
+            Logger.error(`🔗 Request URL: ${url}`);
+            Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
+            
             let errorMessage = `Failed to fetch UTXOs from blockbook for address ${address}: ${error.message}`;
             if (error.response) {
-                errorMessage += ` - ${JSON.stringify(error.response.data)}`;
+                Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
+                Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
+                errorMessage += ` - Status: ${error.response.status}`;
+                // Only log first 1000 chars of response data to avoid spam
+                const responseStr = typeof error.response.data === 'string' 
+                    ? error.response.data 
+                    : JSON.stringify(error.response.data);
+                Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
+            } else if (error.request) {
+                Logger.error(`🔌 No response received from server`);
+                Logger.error(`📡 Request config: ${JSON.stringify({
+                    url: error.config?.url,
+                    method: error.config?.method,
+                    timeout: error.config?.timeout
+                })}`);
             }
+            
             Logger.error(errorMessage);
             throw new Error(errorMessage);
         }
@@ -489,47 +523,105 @@ class DepositRuntime {
 
         const rawHex0 = psbt0.extractTransaction().toHex();
         const txid0 = psbt0.extractTransaction().getId();
-        Logger.info(`sending tx0 ${txid0}, ${rawHex0}`);
+        const finalTxSize = rawHex0.length / 2; // hex string length / 2 = bytes
+        
+        Logger.info(`📝 Consolidation transaction created:`);
+        Logger.info(`   💳 TXID: ${txid0}`);
+        Logger.info(`   📏 Size: ${finalTxSize} bytes`);
+        Logger.info(`   💰 Inputs: ${psbt0.inputCount}`);
+        Logger.info(`   🎯 Outputs: ${psbt0.txOutputs?.length || 'unknown'}`);
+        Logger.info(`   🔗 Raw hex length: ${rawHex0.length} chars`);
+        
+        Logger.info(`💾 Saving transaction to database...`);
         let ret = await this.dbClient.query(
             'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
             [txid0, rawHex0, "consolidation", Math.floor(Date.now() / 1000)]
         );
+        Logger.success(` Transaction saved to database`);
+        
+        Logger.info(`📡 Broadcasting consolidation transaction ${txid0} to L1 network...`);
         try {
-            await this.l1RpcRequest({
+            const rpcResponse = await this.l1RpcRequest({
                 jsonrpc: '1.0',
                 id: Date.now().toString(),
                 method: 'sendrawtransaction',
                 params: [rawHex0]
             });
+            
+            if (rpcResponse.error) {
+                Logger.error(`❌ L1 RPC returned error: ${JSON.stringify(rpcResponse.error)}`);
+                Logger.error(`📋 Error code: ${rpcResponse.error.code}`);
+                Logger.error(`📋 Error message: ${rpcResponse.error.message}`);
+                throw new Error(`RPC Error: ${rpcResponse.error.message}`);
+            }
+            
+            Logger.success(` Transaction ${txid0} successfully broadcasted to L1`);
+            Logger.info(`🔗 Result: ${rpcResponse.result || 'No result returned'}`);
         }
         catch (error: any) {
-            Logger.error(`sending tx0 failed ${txid0},error=${error}`);
+            Logger.error(`❌ Failed to broadcast consolidation transaction ${txid0}`);
+            Logger.error(`📋 Error details: ${error.message}`);
+            Logger.error(`🔍 Stack trace: ${error.stack}`);
             return false;
         }
 
         /////////////////////////////////////////////////////////////////////////////////////////////////////////
+        Logger.info(`⏳ Waiting for consolidation transaction ${txid0} to be confirmed...`);
         let startTime = new Date();
         while (true) {
-            const data = await this.l1RpcRequest({
-                jsonrpc: '1.0',
-                id: Date.now().toString(), // JSON-RPC 1.0 spec requires id to be a string, number, or null.
-                method: 'gettransaction',
-                params: [txid0],
-            });
-            const response = { data }; // Mock axios response structure for compatibility
+            try {
+                const data = await this.l1RpcRequest({
+                    jsonrpc: '1.0',
+                    id: Date.now().toString(),
+                    method: 'getrawtransaction',
+                    params: [txid0, true], // true = verbose mode to get confirmations
+                });
 
-            if (response.data.error) {
-                if ((new Date().getTime() - startTime.getTime()) > 5 * 60 * 1000) {
-                    throw new Error('Timeout: Transaction not confirmed after 5 minutes');
+                if (data.error) {
+                    // Check if it's just not found yet (transaction still propagating)
+                    if (data.error.code === -5 && data.error.message.includes('No such mempool or blockchain transaction')) {
+                        Logger.info(`🔍 Transaction ${txid0} not found in mempool/blockchain yet, waiting...`);
+                    } else {
+                        Logger.warn(`⚠️ RPC Error checking transaction: ${JSON.stringify(data.error)}`);
+                    }
+                    
+                    if ((new Date().getTime() - startTime.getTime()) > 5 * 60 * 1000) {
+                        throw new Error('Timeout: Transaction not found after 5 minutes');
+                    } else {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        continue;
+                    }
+                } else if (data.result) {
+                    const confirmations = data.result.confirmations || 0;
+                    const blockheight = data.result.blockheight || null;
+                    const blockhash = data.result.blockhash || null;
+                    
+                    Logger.info(`📊 Transaction ${txid0}: ${confirmations} confirmations`);
+                    
+                    if (confirmations >= 1) {
+                        Logger.success(` Consolidation transaction confirmed!`);
+                        Logger.info(`   🎯 TXID: ${txid0}`);
+                        Logger.info(`   📦 Block: ${blockheight} (${blockhash})`);
+                        Logger.info(`    Confirmations: ${confirmations}`);
+                        Logger.info(`   🔗 Explorer: https://sochain.com/tx/DOGETEST/${txid0}`);
+                        break;
+                    } else {
+                        Logger.info(`🔄 Transaction in mempool, waiting for confirmation...`);
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        continue;
+                    }
                 } else {
-                    Logger.info("waiting transaction 0 ...");
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    Logger.warn(`⚠️ Unexpected response format: ${JSON.stringify(data)}`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
                     continue;
                 }
-            } else {
-                let respose = JSON.stringify(response.data);
-                Logger.success(`transaction 0 success! https://sochain.com/tx/DOGETEST/${txid0}`)
-                break;
+            } catch (error: any) {
+                Logger.warn(`⚠️ Error checking transaction status: ${error.message}`);
+                if ((new Date().getTime() - startTime.getTime()) > 5 * 60 * 1000) {
+                    throw new Error('Timeout: Failed to verify transaction after 5 minutes');
+                }
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                continue;
             }
         }
 
@@ -590,7 +682,7 @@ class DepositRuntime {
                         value: valueToAgent - depositSize * feeRate
                     });
                     //OP_RETURN
-                    const data = Buffer.from(this.depositTargetAddress.toLowerCase().replace(/^0x/, '00'), 'hex');
+                    const data = Buffer.from(this.depositTargetAddress.toLowerCase().replace('0x', '00'), 'hex');
                     const embed = bitcoin.payments.embed({ data: [data] });
                     if (!embed.output) {
                         throw new Error('Could not create OP_RETURN script.');
@@ -683,11 +775,68 @@ class DepositRuntime {
             password: url.password
         } : undefined;
         const axiosUrl = `${url.protocol}//${url.host}${url.pathname}`;
-        const response = await axios.post(axiosUrl, payload, {
-            headers: { 'Content-Type': 'application/json' },
-            auth: auth,
-        });
-        return response.data;
+        
+        // Log request details (but hide sensitive auth info)
+        const methodName = Array.isArray(payload) ? 
+            `batch[${payload.length}]` : 
+            payload.method || 'unknown';
+        Logger.info(`🔗 L1 RPC Request: ${methodName} to ${url.hostname}`);
+        
+        try {
+            const startTime = Date.now();
+            const response = await axios.post(axiosUrl, payload, {
+                headers: { 'Content-Type': 'application/json' },
+                auth: auth,
+                timeout: 60000, // 60 second timeout for RPC calls
+            });
+            const duration = Date.now() - startTime;
+            Logger.info(` L1 RPC responded in ${duration}ms with status ${response.status}`);
+            
+            // Check for RPC errors in response
+            if (response.data) {
+                if (Array.isArray(response.data)) {
+                    const errorCount = response.data.filter(r => r && r.error).length;
+                    if (errorCount > 0) {
+                        Logger.warn(`⚠️ ${errorCount}/${response.data.length} RPC calls returned errors`);
+                        // Log first error for debugging
+                        const firstError = response.data.find(r => r && r.error);
+                        if (firstError) {
+                            Logger.error(`📋 First RPC error: ${JSON.stringify(firstError.error)}`);
+                        }
+                    }
+                } else if (response.data.error) {
+                    Logger.error(`❌ RPC Error: ${JSON.stringify(response.data.error)}`);
+                }
+            }
+            
+            return response.data;
+        } catch (error: any) {
+            const duration = Date.now() - Date.now();  // This will be 0, but keeping for consistency
+            Logger.error(`❌ L1 RPC request failed after ${duration}ms`);
+            Logger.error(`🔗 Request to: ${url.hostname}`);
+            Logger.error(`📡 Method: ${methodName}`);
+            Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
+            
+            if (error.response) {
+                Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
+                Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
+                
+                // Log response data but limit size
+                const responseStr = typeof error.response.data === 'string' 
+                    ? error.response.data 
+                    : JSON.stringify(error.response.data);
+                Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
+            } else if (error.request) {
+                Logger.error(`🔌 No response received from L1 RPC server`);
+                Logger.error(`📡 Request config: ${JSON.stringify({
+                    url: error.config?.url,
+                    method: error.config?.method,
+                    timeout: error.config?.timeout
+                })}`);
+            }
+            
+            throw error;
+        }
     }
 
     private async sendRawTransactions(rawHexs: string[]) {
@@ -784,7 +933,7 @@ class DepositRuntime {
         }
         depositBar.stop();
 
-        Logger.success(`broadcast deposit transactions complete. success:${success}, fail: ${fail}`);
+        Logger.info(`broadcast deposit transactions complete. success:${success}, fail: ${fail}`);
     }
 
     private async processTxData(txHash: string, txData: string, l2Height: number, dbClient: Client | null) {
@@ -1073,18 +1222,21 @@ if (require.main === module) {
         bridgeAddress: "2Mu6Pi8NATjSRCW6DTcrCRXhZQiVSL4z7ak"
     };
     const perfNet = {
-        l2RpcUrl: "https://rpc.perf.unifra.xyz",
-        bridgeAddress: "2NCYvqi3LG8zg5eVQcpDmXaHvBvk6UwxbHt"
+        l2RpcUrl: "https://rpc.qiaoxiaorui.org",
+        bridgeAddress: "2NEHuAFD9v4EWh1G1ZFqBCZiuD3Gt1FtahC"
     };
 
     let config = perfNet;
-
+/*
+username = "fBJhRsMr"
+password = "btmiSyJ4YRiWNgwr"
+*/
     (async () => {
         // TODO: Replace these with your actual test parameters
-        const l1RpcUrl = process.env.L1_RPC_URL || 'https://gIiXOF7h:WxkMni1FAZc77cvZ@dogecoin.perf.unifra.xyz';
+        const l1RpcUrl = process.env.L1_RPC_URL || 'https://fBJhRsMr:btmiSyJ4YRiWNgwr@dogecoin.qiaoxiaorui.org';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 12000);
+        const txCount = Number(process.env.TX_COUNT || 120);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);
@@ -1102,7 +1254,7 @@ if (require.main === module) {
             config.bridgeAddress,
             depositTargetAddress,
         );
-        await runtime.run(255);
+        await runtime.run(0);
 
     })();
 }

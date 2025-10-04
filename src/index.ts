@@ -190,7 +190,7 @@ async function run() {
             depositTarget
         );
 
-        await depositRuntime.run();
+        await depositRuntime.run(0);
         return;
     }
 

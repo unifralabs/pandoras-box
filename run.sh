@@ -8,7 +8,7 @@ batch=200
 subaccounts=500
 concurrency=250
 
-RPC="https://rpc.perf.unifra.xyz"
+RPC="https://rpc.qiaoxiaorui.org"
 zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
