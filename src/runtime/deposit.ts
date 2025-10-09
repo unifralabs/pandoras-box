@@ -1043,7 +1043,6 @@ class DepositRuntime {
 
         Logger.info('Waiting for transactions to be included in L1 and L2 blocks...');
 
-        // 主线程创建 MultiBar
         const multibar = new MultiBar({
             clearOnComplete: false,
             hideCursor: true,
@@ -1051,31 +1050,31 @@ class DepositRuntime {
             stream: process.stderr
         });
 
-        // L1 进度条
         const l1BlockBar = multibar.create(1, 0, {
             name: "Scan L1 Blocks ",
-            barCompleteChar: '+',
-            barIncompleteChar: '.',
+            barCompleteString: '█',
+            barIncompleteString: '░',
         });
         const l1TxBar = multibar.create(1, 0, {
             name: "include L1 tx ",
-            barCompleteChar: '+',
-            barIncompleteChar: '.',
+            barCompleteString: '█',
+            barIncompleteString: '░',
+            barCompleteChar: '█',
+            barIncompleteChar: '░',
         });
 
 
-        // L2 进度条
         const { rows: l2TotalRows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit'");
         const totalDeposits = parseInt(l2TotalRows[0].count, 10);
         const l2blockBar = multibar.create(1, 0, {
             name: "Scan L2 Blocks ",
-            barCompleteChar: '+',
-            barIncompleteChar: '.',
+            barCompleteString: '█',
+            barIncompleteString: '░',
         });
         const l2TxBar = multibar.create(totalDeposits, 0, {
             name: "Found Deposits ",
-            barCompleteChar: '+',
-            barIncompleteChar: '.',
+            barCompleteString: '█',
+            barIncompleteString: '░',
         });
 
         const processL1Blocks = async (l1BlockBar: any, l1TxBar: any) => {
@@ -1222,8 +1221,8 @@ if (require.main === module) {
         bridgeAddress: "2Mu6Pi8NATjSRCW6DTcrCRXhZQiVSL4z7ak"
     };
     const perfNet = {
-        l2RpcUrl: "https://rpc.qiaoxiaorui.org",
-        bridgeAddress: "2NEHuAFD9v4EWh1G1ZFqBCZiuD3Gt1FtahC"
+        l2RpcUrl: "https://rpc.perf.unifra.xyz",
+        bridgeAddress: "2N3wupvhudcDHsU2czaTPTm7HEmBucGnyj2"
     };
 
     let config = perfNet;
@@ -1236,7 +1235,7 @@ password = "btmiSyJ4YRiWNgwr"
         const l1RpcUrl = process.env.L1_RPC_URL || 'https://fBJhRsMr:btmiSyJ4YRiWNgwr@dogecoin.qiaoxiaorui.org';
         const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
         const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 120);
+        const txCount = Number(process.env.TX_COUNT || 600);
         const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);

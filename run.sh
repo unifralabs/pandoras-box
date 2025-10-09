@@ -3,9 +3,9 @@
 #yarn install
 #yarn build
 rm -rf out/pandoras-box.log
-transactions=20000
-batch=200
-subaccounts=500
+transactions=200
+batch=100
+subaccounts=100
 concurrency=250
 
 RPC="https://rpc.qiaoxiaorui.org"
@@ -100,7 +100,7 @@ runWithDrawal(){
 # exit 0
 
 #clearPending
-runEOA
+#runEOA
 # #getPending
 # exit 0
 
