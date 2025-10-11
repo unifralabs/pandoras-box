@@ -295,20 +295,20 @@ class DepositRuntime {
             return [];
         } catch (error: any) {
             const duration = Date.now() - Date.now();  // This will be 0, but keeping for consistency
-            Logger.error(`❌ Blockbook API request failed after ${duration}ms`);
-            Logger.error(`🔗 Request URL: ${url}`);
-            Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
+            Logger.info(`❌ Blockbook API request failed after ${duration}ms`);
+            Logger.info(`🔗 Request URL: ${url}`);
+            Logger.info(`📡 Error type: ${error.code || 'Unknown'}`);
 
             let errorMessage = `Failed to fetch UTXOs from blockbook for address ${address}: ${error.message}`;
             if (error.response) {
-                Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
-                Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
+                Logger.info(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
+                Logger.info(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
                 errorMessage += ` - Status: ${error.response.status}`;
                 // Only log first 1000 chars of response data to avoid spam
                 const responseStr = typeof error.response.data === 'string'
                     ? error.response.data
                     : JSON.stringify(error.response.data);
-                Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
+                Logger.info(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
             } else if (error.request) {
                 Logger.error(`🔌 No response received from server`);
                 Logger.error(`📡 Request config: ${JSON.stringify({
