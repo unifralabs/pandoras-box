@@ -177,20 +177,20 @@ async function run() {
             }
         }
 
-        const depositRuntime = new DepositRuntime(
-            l1RpcUrl,
-            url, // l2RpcUrl is the main --json-rpc
-            mnemonic,
-            "agentWif",
-            transactionCount,
-            dbUrl,
-            network,
-            amountPerTxInSatoshi,
-            "bridgeAddress",
-            depositTarget
-        );
+        // const depositRuntime = new DepositRuntime(
+        //     l1RpcUrl,
+        //     url, // l2RpcUrl is the main --json-rpc
+        //     mnemonic,
+        //     "agentWif",
+        //     transactionCount,
+        //     dbUrl,
+        //     network,
+        //     amountPerTxInSatoshi,
+        //     "bridgeAddress",
+        //     depositTarget
+        // );
 
-        await depositRuntime.run(0);
+        //await depositRuntime.run(0);
         return;
     }
 

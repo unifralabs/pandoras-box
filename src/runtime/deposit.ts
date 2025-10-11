@@ -5,9 +5,12 @@ import { Interface } from '@ethersproject/abi';
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ECPairFactory from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
-import { Client } from 'pg';
 import { MultiBar, SingleBar } from 'cli-progress';
+import sqlite3 from 'sqlite3';
+import { open, type Database } from 'sqlite';
+import { startDogeMonitor } from '../tools/monitor';
 
+import Table from 'cli-table3';
 import { create } from 'domain';
 
 const ECPair = ECPairFactory.ECPairFactory(ecc);
@@ -15,6 +18,19 @@ const ECPair = ECPairFactory.ECPairFactory(ecc);
 const feeRate = 1000;
 const maxOutCount = 1024;
 const depositSize = 222;
+
+type DB = Database<sqlite3.Database, sqlite3.Statement>;
+
+interface DepositTransaction {
+    txid: string;
+    raw_hex: string;
+    type: string;
+    broadcast_at: number | null;
+    l1_block_height: number | null;
+    l1_block_hash: string | null;
+    l2_block_height: number | null;
+    l2_txhash: string | null;
+}
 
 const dogecoinTestNetwork = {
     messagePrefix: '\x19Dogecoin Signed Message:\n',
@@ -39,6 +55,7 @@ type Utxo = {
 
 class DepositRuntime {
     private l1RpcUrl: string;
+    private zmqUrl: string;
 
     private l2RpcUrl: string;
     private masterWif: string;
@@ -49,15 +66,18 @@ class DepositRuntime {
     private amountPerTxInSatoshi: bigint;
     private bridgeAddress: string;
     private l2provider: JsonRpcProvider;
-    private dbClient: Client;
+    private l1Confirmations: number;
+    private dbClient!: DB;
     private l1MasterAddress: string = '';
     private l1AgentAddress: string = '';
     private depositTargetAddress: string = '';
     private blockBookUrl = "https://blockbook.qiaoxiaorui.org/api/";
+    private dogeMonitor: { shutdown: () => void; finished: Promise<void> } | null = null;
 
     constructor(
         l1RpcUrl: string,
         l2RpcUrl: string,
+        zmqUrl: string,
         masterWif: string,
         agentWif: string,
         txCount: number,
@@ -65,9 +85,11 @@ class DepositRuntime {
         network: string,
         amountPerTxInSatoshi: bigint,
         bridgeAddress: string,
-        depositTargetAddress: string
+        depositTargetAddress: string,
+        l1Confirmations: number
     ) {
         this.l1RpcUrl = l1RpcUrl;
+        this.zmqUrl = zmqUrl;
         this.l2RpcUrl = l2RpcUrl;
         this.masterWif = masterWif;
         this.agentWif = agentWif
@@ -77,9 +99,9 @@ class DepositRuntime {
         this.amountPerTxInSatoshi = amountPerTxInSatoshi;
         this.bridgeAddress = bridgeAddress;
         this.depositTargetAddress = depositTargetAddress;
+        this.l1Confirmations = l1Confirmations;
 
         this.l2provider = new JsonRpcProvider(l2RpcUrl);
-        this.dbClient = new Client({ connectionString: this.dbUrl });
 
         // Derive L1 master address from WIF
         {
@@ -113,7 +135,10 @@ class DepositRuntime {
 
         try {
             Logger.info(`Connecting to database at ${this.dbUrl}...`);
-            await this.dbClient.connect();
+            this.dbClient = await open({
+                filename: this.dbUrl,
+                driver: sqlite3.Database
+            });
             Logger.success('Database connection successful.');
 
 
@@ -124,8 +149,14 @@ class DepositRuntime {
             Logger.info(`Checking L2 RPC connection at ${this.l2RpcUrl}...`);
             await this.l2provider.getNetwork();
             Logger.success('L2 RPC connection successful.');
+
+            await this.initializeDbSchema();
             if (step == 0) {
-                await this.initializeDbSchema();
+                Logger.info(`Starting Dogecoin monitor thread...`);
+                this.dogeMonitor = await startDogeMonitor({ db: this.dbClient, zmqUrl: this.zmqUrl });
+                Logger.success('Dogecoin monitor is running in the background.');
+
+                await this.dbClient.exec(`DELETE FROM deposit_transactions;`);
                 await this.prepareUtxosForDeposit();
                 step = 1;
             }
@@ -142,18 +173,27 @@ class DepositRuntime {
 
             if (step == 2) {
                 await this.collectingBlockData();
+                step += 1;
             }
 
-            await this.report();
+            if (step == 3) {
+                await this.generateReport();
+            }
 
             Logger.success('\n Deposit stress test finished successfully.');
         } catch (error: any) {
             Logger.error('An error occurred during the deposit stress test:');
             Logger.error(error.message);
         } finally {
+            if (this.dogeMonitor) {
+                Logger.info('Shutting down Dogecoin monitor...');
+                this.dogeMonitor.shutdown();
+                await this.dogeMonitor.finished;
+                Logger.success('Dogecoin monitor has been terminated.');
+            }
         }
         if (this.dbClient) {
-            await this.dbClient.end();
+            await this.dbClient.close();
             Logger.info('Database connection closed.');
         }
     }
@@ -196,10 +236,36 @@ class DepositRuntime {
             l2_processed_height BIGINT
         );`;
 
-        await this.dbClient.query(`ALTER TABLE IF EXISTS deposit_transactions RENAME TO deposit_transactions_${Date.now()};`);
-        await this.dbClient.query(createTransactionsTable);
-        await this.dbClient.query(createL2BlockHeadersTable);
-        await this.dbClient.query(createRecordTable);
+        const createL1BlockHeadersTable = `
+        CREATE TABLE IF NOT EXISTS l1_block_headers (
+            height BIGINT PRIMARY KEY,
+            hash VARCHAR(66) NOT NULL UNIQUE,
+            timestamp BIGINT NOT NULL,
+            created_at BIGINT NOT NULL
+        );`;
+
+        const createDepositTimeView = `
+        CREATE VIEW deposit_transactions_time AS
+        SELECT
+            dt.*,
+            l1h.timestamp AS l1_time,
+            l2h.timestamp AS l2_time
+        FROM
+            deposit_transactions dt
+        LEFT JOIN
+            l1_block_headers l1h ON dt.l1_block_height = l1h.height
+        LEFT JOIN
+            l2_block_headers l2h ON dt.l2_block_height = l2h.height
+        WHERE dt.type = 'deposit';
+        `;
+
+
+        await this.dbClient.exec(createTransactionsTable);
+        await this.dbClient.exec(createL2BlockHeadersTable);
+        await this.dbClient.exec(createL1BlockHeadersTable);
+        await this.dbClient.exec(createRecordTable);
+        await this.dbClient.exec(`DROP VIEW IF EXISTS deposit_transactions_time;`);
+        await this.dbClient.exec(createDepositTimeView);
 
         Logger.success('Database schema is ready.');
     }
@@ -208,7 +274,7 @@ class DepositRuntime {
         // this.blockbookUrl+`/v2/utxo/${address}`
         const url = `${this.blockBookUrl}/v2/utxo/${address}`;
         Logger.info(`🌐 Requesting blockbook API: ${url}`);
-        
+
         try {
             const startTime = Date.now();
             const response = await axios.get(url, {
@@ -220,7 +286,7 @@ class DepositRuntime {
             });
             const duration = Date.now() - startTime;
             Logger.success(` Blockbook API responded in ${duration}ms with status ${response.status}`);
-            
+
             if (response.data && Array.isArray(response.data)) {
                 Logger.info(`📊 Received ${response.data.length} UTXOs from blockbook`);
                 return response.data;
@@ -232,15 +298,15 @@ class DepositRuntime {
             Logger.error(`❌ Blockbook API request failed after ${duration}ms`);
             Logger.error(`🔗 Request URL: ${url}`);
             Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
-            
+
             let errorMessage = `Failed to fetch UTXOs from blockbook for address ${address}: ${error.message}`;
             if (error.response) {
                 Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
                 Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
                 errorMessage += ` - Status: ${error.response.status}`;
                 // Only log first 1000 chars of response data to avoid spam
-                const responseStr = typeof error.response.data === 'string' 
-                    ? error.response.data 
+                const responseStr = typeof error.response.data === 'string'
+                    ? error.response.data
                     : JSON.stringify(error.response.data);
                 Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
             } else if (error.request) {
@@ -251,7 +317,7 @@ class DepositRuntime {
                     timeout: error.config?.timeout
                 })}`);
             }
-            
+
             Logger.error(errorMessage);
             throw new Error(errorMessage);
         }
@@ -259,8 +325,8 @@ class DepositRuntime {
 
     private async useAgentUtxo() {
         Logger.info('\n🔧 useAgentUtxo for deposit...');
-        await this.dbClient.query("delete from l2_block_headers;");
-        await this.dbClient.query("delete from record;");
+        await this.dbClient.exec("delete from l2_block_headers;");
+        await this.dbClient.exec("delete from record;");
 
         let allUtxos: any[] = [];
         let validUtxos: Utxo[] = [];
@@ -348,17 +414,17 @@ class DepositRuntime {
             psbtDeposit.finalizeAllInputs();
             const rawHexDeposit = psbtDeposit.extractTransaction().toHex();
             const txidDeposit = psbtDeposit.extractTransaction().getId();
-            this.dbClient.query(
-                'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-                [txidDeposit, rawHexDeposit, "deposit"]
+            await this.dbClient.run(
+                'INSERT INTO deposit_transactions (txid, raw_hex, type) VALUES (?, ?, ?) ON CONFLICT (txid) DO NOTHING',
+                txidDeposit, rawHexDeposit, "deposit"
             );
         }
     }
 
     private async prepareUtxosForDeposit() {
         Logger.info('\n🔧 Preparing UTXOs for deposit...');
-        await this.dbClient.query("delete from l2_block_headers;");
-        await this.dbClient.query("delete from record;");
+        await this.dbClient.exec("delete from l2_block_headers;");
+        await this.dbClient.exec("delete from record;");
 
         // 1. 从 dogecoin rpc 获取 master account 的 utxos
         Logger.info(`Fetching UTXOs for master account ${this.l1MasterAddress} from ${this.blockBookUrl}...`);
@@ -524,21 +590,21 @@ class DepositRuntime {
         const rawHex0 = psbt0.extractTransaction().toHex();
         const txid0 = psbt0.extractTransaction().getId();
         const finalTxSize = rawHex0.length / 2; // hex string length / 2 = bytes
-        
+
         Logger.info(`📝 Consolidation transaction created:`);
         Logger.info(`   💳 TXID: ${txid0}`);
         Logger.info(`   📏 Size: ${finalTxSize} bytes`);
         Logger.info(`   💰 Inputs: ${psbt0.inputCount}`);
         Logger.info(`   🎯 Outputs: ${psbt0.txOutputs?.length || 'unknown'}`);
         Logger.info(`   🔗 Raw hex length: ${rawHex0.length} chars`);
-        
+
         Logger.info(`💾 Saving transaction to database...`);
-        let ret = await this.dbClient.query(
-            'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-            [txid0, rawHex0, "consolidation", Math.floor(Date.now() / 1000)]
+        await this.dbClient.run(
+            'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at) VALUES (?, ?, ?, ?) ON CONFLICT (txid) DO NOTHING',
+            txid0, rawHex0, "consolidation", Math.floor(Date.now() / 1000)
         );
         Logger.success(` Transaction saved to database`);
-        
+
         Logger.info(`📡 Broadcasting consolidation transaction ${txid0} to L1 network...`);
         try {
             const rpcResponse = await this.l1RpcRequest({
@@ -547,14 +613,14 @@ class DepositRuntime {
                 method: 'sendrawtransaction',
                 params: [rawHex0]
             });
-            
+
             if (rpcResponse.error) {
                 Logger.error(`❌ L1 RPC returned error: ${JSON.stringify(rpcResponse.error)}`);
                 Logger.error(`📋 Error code: ${rpcResponse.error.code}`);
                 Logger.error(`📋 Error message: ${rpcResponse.error.message}`);
                 throw new Error(`RPC Error: ${rpcResponse.error.message}`);
             }
-            
+
             Logger.success(` Transaction ${txid0} successfully broadcasted to L1`);
             Logger.info(`🔗 Result: ${rpcResponse.result || 'No result returned'}`);
         }
@@ -584,7 +650,7 @@ class DepositRuntime {
                     } else {
                         Logger.warn(`⚠️ RPC Error checking transaction: ${JSON.stringify(data.error)}`);
                     }
-                    
+
                     if ((new Date().getTime() - startTime.getTime()) > 5 * 60 * 1000) {
                         throw new Error('Timeout: Transaction not found after 5 minutes');
                     } else {
@@ -595,9 +661,9 @@ class DepositRuntime {
                     const confirmations = data.result.confirmations || 0;
                     const blockheight = data.result.blockheight || null;
                     const blockhash = data.result.blockhash || null;
-                    
+
                     Logger.info(`📊 Transaction ${txid0}: ${confirmations} confirmations`);
-                    
+
                     if (confirmations >= 1) {
                         Logger.success(` Consolidation transaction confirmed!`);
                         Logger.info(`   🎯 TXID: ${txid0}`);
@@ -662,12 +728,12 @@ class DepositRuntime {
                 const txidToAgent = psbtToAgent.extractTransaction().getId();
                 toAgentTxIds.push(txidToAgent);
 
-                await this.dbClient.query("BEGIN");
-                let ret = await this.dbClient.query(
-                    'INSERT INTO deposit_transactions (txid, raw_hex,type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, $4, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-                    [txidToAgent, rawHexToAgent, "splitting", Math.floor(Date.now() / 1000)]
+                await this.dbClient.exec("BEGIN");
+                const ret = await this.dbClient.run(
+                    'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at) VALUES (?, ?, ?, ?) ON CONFLICT (txid) DO NOTHING',
+                    txidToAgent, rawHexToAgent, "splitting", Math.floor(Date.now() / 1000)
                 );
-                if (ret.rowCount === 0) {
+                if (ret.changes === 0) {
                     Logger.warn(`Transaction with txid ${txidToAgent} already exists, skipping insertion.`);
                 }
                 for (let j = 0; j < planCount; j++) {
@@ -696,12 +762,12 @@ class DepositRuntime {
                     psbtDeposit.finalizeAllInputs();
                     const rawHex2 = psbtDeposit.extractTransaction().toHex();
                     const txid2 = psbtDeposit.extractTransaction().getId();
-                    this.dbClient.query(
-                        'INSERT INTO deposit_transactions (txid, raw_hex, type, broadcast_at, l1_block_height, l2_block_height, l2_txhash) VALUES ($1, $2,$3, NULL, NULL, NULL, NULL) ON CONFLICT (txid) DO NOTHING',
-                        [txid2, rawHex2, "deposit"]
+                    await this.dbClient.run(
+                        'INSERT INTO deposit_transactions (txid, raw_hex, type) VALUES (?, ?, ?) ON CONFLICT (txid) DO NOTHING',
+                        txid2, rawHex2, "deposit"
                     );
                 }
-                this.dbClient.query("COMMIT");
+                await this.dbClient.exec("COMMIT");
                 let t = 0;
                 const maxTrySend = 5;
                 for (t = 0; t < maxTrySend; t++) {
@@ -750,9 +816,9 @@ class DepositRuntime {
                         if (idx !== -1) {
                             toAgentTxIds.splice(idx, 1);
                             confirmedCount++;
-                            await this.dbClient.query(
-                                'UPDATE deposit_transactions SET l1_block_hash = $1, l1_block_height=$2 WHERE txid = $3',
-                                [data.blockHash, data.blockHeight, txid]);
+                            await this.dbClient.run(
+                                'UPDATE deposit_transactions SET l1_block_hash = ?, l1_block_height=? WHERE txid = ?',
+                                data.blockHash, data.blockHeight, txid);
                         }
                     } else {
                         Logger.info(`Transaction ${txid} confirmations: ${confirmations} <${confirmationsThreshold}, waiting...`);
@@ -775,13 +841,13 @@ class DepositRuntime {
             password: url.password
         } : undefined;
         const axiosUrl = `${url.protocol}//${url.host}${url.pathname}`;
-        
+
         // Log request details (but hide sensitive auth info)
-        const methodName = Array.isArray(payload) ? 
-            `batch[${payload.length}]` : 
+        const methodName = Array.isArray(payload) ?
+            `batch[${payload.length}]` :
             payload.method || 'unknown';
         Logger.info(`🔗 L1 RPC Request: ${methodName} to ${url.hostname}`);
-        
+
         try {
             const startTime = Date.now();
             const response = await axios.post(axiosUrl, payload, {
@@ -791,7 +857,7 @@ class DepositRuntime {
             });
             const duration = Date.now() - startTime;
             Logger.info(` L1 RPC responded in ${duration}ms with status ${response.status}`);
-            
+
             // Check for RPC errors in response
             if (response.data) {
                 if (Array.isArray(response.data)) {
@@ -808,7 +874,7 @@ class DepositRuntime {
                     Logger.error(`❌ RPC Error: ${JSON.stringify(response.data.error)}`);
                 }
             }
-            
+
             return response.data;
         } catch (error: any) {
             const duration = Date.now() - Date.now();  // This will be 0, but keeping for consistency
@@ -816,14 +882,14 @@ class DepositRuntime {
             Logger.error(`🔗 Request to: ${url.hostname}`);
             Logger.error(`📡 Method: ${methodName}`);
             Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
-            
+
             if (error.response) {
                 Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
                 Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
-                
+
                 // Log response data but limit size
-                const responseStr = typeof error.response.data === 'string' 
-                    ? error.response.data 
+                const responseStr = typeof error.response.data === 'string'
+                    ? error.response.data
                     : JSON.stringify(error.response.data);
                 Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
             } else if (error.request) {
@@ -834,7 +900,7 @@ class DepositRuntime {
                     timeout: error.config?.timeout
                 })}`);
             }
-            
+
             throw error;
         }
     }
@@ -879,14 +945,14 @@ class DepositRuntime {
         const l1LatestHeight = getblockcountReturn.result;
         Logger.info(`Starting at L2 block height: ${l2LatestHeight}, L1 block height: ${l1LatestHeight}`);
 
-        await this.dbClient.query(
-            "INSERT INTO record (l1_start_test_height, l2_start_test_height) VALUES ($1, $2)",
-            [l1LatestHeight, l2LatestHeight]);
+        await this.dbClient.run(
+            "INSERT INTO record (l1_start_test_height, l2_start_test_height) VALUES (?, ?)",
+            l1LatestHeight, l2LatestHeight);
 
         Logger.info(`Broadcasting ${this.txCount} transactions to L1...`);
 
-        const res = await this.dbClient.query("SELECT * FROM deposit_transactions WHERE type='deposit' AND broadcast_at IS NULL;");
-        const depositTxs = res.rows;
+        const res = await this.dbClient.all<DepositTransaction[]>("SELECT * FROM deposit_transactions WHERE type='deposit' AND broadcast_at IS NULL;");
+        const depositTxs = res;
 
         const depositBar = new SingleBar({
             format: 'broadcast deposit [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} txs',
@@ -915,9 +981,9 @@ class DepositRuntime {
                     const correspondingTx = batch[index];
                     if (result && !result.error) {
                         Logger.debug(`Broadcasted deposit tx: ${correspondingTx.txid}`);
-                        await this.dbClient.query(
-                            'UPDATE deposit_transactions SET broadcast_at = $1 WHERE txid = $2',
-                            [Math.floor(Date.now() / 1000), correspondingTx.txid]);
+                        await this.dbClient.run(
+                            'UPDATE deposit_transactions SET broadcast_at = ? WHERE txid = ?',
+                            Math.floor(Date.now() / 1000), correspondingTx.txid);
                         success += 1;
                         depositBar.increment();
                     } else {
@@ -936,7 +1002,7 @@ class DepositRuntime {
         Logger.info(`broadcast deposit transactions complete. success:${success}, fail: ${fail}`);
     }
 
-    private async processTxData(txHash: string, txData: string, l2Height: number, dbClient: Client | null) {
+    private async processTxData(txHash: string, txData: string, l2Height: number, dbClient: DB | null) {
         const handleL1MessageABI = [{
             "inputs": [
                 {
@@ -1010,9 +1076,9 @@ class DepositRuntime {
                     const l1Txid = depositID.substring(2).toLowerCase();
                     Logger.debug(`l1Txid=${l1Txid}, l2Height=${l2Height}`);
                     if (dbClient) {
-                        await dbClient.query(
-                            'UPDATE deposit_transactions SET l2_block_height = $1, l2_txhash = $2 WHERE txid = $3 AND l2_block_height IS NULL',
-                            [l2Height, txHash, l1Txid]
+                        await dbClient.run(
+                            'UPDATE deposit_transactions SET l2_block_height = ?, l2_txhash = ? WHERE txid = ? AND l2_block_height IS NULL',
+                            l2Height, txHash, l1Txid
                         );
                     }
                     return true;
@@ -1028,12 +1094,11 @@ class DepositRuntime {
     private async collectingBlockData() {
         Logger.info('\n📊 Collecting and processing block data...');
 
-        const res = await this.dbClient.query("SELECT * FROM record limit 1;");
-        if (res.rowCount != 1) {
+        const record = await this.dbClient.get("SELECT * FROM record limit 1;");
+        if (!record) {
             Logger.error("record table is empty!");
             return;
         }
-        const record = res.rows[0];
         const l1_start_test_height = record.l1_start_test_height;
         const l2_start_test_height = record.l2_start_test_height;
         const l1_processed_height = record.l1_processed_height;
@@ -1064,8 +1129,8 @@ class DepositRuntime {
         });
 
 
-        const { rows: l2TotalRows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit'");
-        const totalDeposits = parseInt(l2TotalRows[0].count, 10);
+        const l2TotalRows = await this.dbClient.get<{ "COUNT(*)": number }>("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit'");
+        const totalDeposits = l2TotalRows ? l2TotalRows['COUNT(*)'] : 0;
         const l2blockBar = multibar.create(1, 0, {
             name: "Scan L2 Blocks ",
             barCompleteString: '█',
@@ -1080,12 +1145,12 @@ class DepositRuntime {
         const processL1Blocks = async (l1BlockBar: any, l1TxBar: any) => {
             l1Height = parseInt(l1Height);
 
-            const { rows } = await this.dbClient.query("SELECT COUNT(*) AS total FROM deposit_transactions WHERE type='deposit'");
-            let totalTx = parseInt(rows[0].total, 10);
+            const totalResult = await this.dbClient.get<{ total: number }>("SELECT COUNT(*) AS total FROM deposit_transactions WHERE type='deposit'");
+            let totalTx = totalResult?.total ?? 0;
             l1TxBar.setTotal(totalTx);
             {
-                const { rows } = await this.dbClient.query("SELECT COUNT(*) AS success FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NOT NULL");
-                l1TxBar.update(parseInt(rows[0].success, 10));
+                const successResult = await this.dbClient.get<{ success: number }>("SELECT COUNT(*) AS success FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NOT NULL");
+                l1TxBar.update(successResult?.success ?? 0);
             }
             while (true) {
 
@@ -1098,26 +1163,27 @@ class DepositRuntime {
                     const { result: indexingHash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
                     const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [indexingHash, 1] });
 
-                    this.dbClient.query("BEGIN;");
+                    await this.dbClient.exec("BEGIN;");
                     if (block && block.tx) {
                         for (const txid of block.tx) {
                             // Logger.info(`txid=${txid}, txid.toString()=${txid.toString()}},l1Height=${l1Height},indexingHash=${indexingHash}`);
-                            const result = await this.dbClient.query(
-                                'UPDATE deposit_transactions SET l1_block_height = $1, l1_block_hash = $2 WHERE txid = $3 AND l1_block_height IS NULL',
-                                [l1Height, indexingHash, txid]
+                            const result = await this.dbClient.run(
+                                'UPDATE deposit_transactions SET l1_block_height = ?, l1_block_hash = ? WHERE txid = ? AND l1_block_height IS NULL',
+                                l1Height, indexingHash, txid
                             );
-                            const updatedCount = result.rowCount;
+                            const updatedCount = result.changes ?? 0;
                             l1TxBar.increment(updatedCount);
                         }
                     }
-                    await this.dbClient.query('UPDATE record SET l1_processed_height = $1', [l1Height]);
-                    this.dbClient.query("COMMIT;");
+                    await this.dbClient.run('UPDATE record SET l1_processed_height = ?', l1Height);
+                    await this.dbClient.exec("COMMIT;");
                     Logger.info(`[L1 Processor] indexed ${l1Height}`);
                     l1Height++;
                     l1BlockBar.update(l1Height);
 
-                    const { rows } = await this.dbClient.query("SELECT COUNT(*) AS pending FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
-                    if (parseInt(rows[0].pending, 10) === 0) {
+                    const pendingResult = await this.dbClient.get<{ pending: number }>("SELECT COUNT(*) AS pending FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
+
+                    if (pendingResult?.pending === 0) {
                         Logger.info('[L1 Processor] All deposit transactions found on L1. Finishing.');
                         l1BlockBar.stop();
                         return;
@@ -1133,8 +1199,8 @@ class DepositRuntime {
         const processL2Blocks = async (l2blockBar: any, l2TxBar: any) => {
             l2Height = parseInt(l2Height);
             while (true) {
-                const { rows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NULL");
-                let pending = parseInt(rows[0].count, 10);
+                const result = await this.dbClient.get<{ "COUNT(*)": number }>("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NULL");
+                let pending = result?.['COUNT(*)'] ?? 0;
                 if (pending === 0) {
                     l2blockBar.stop();
                     l2TxBar.stop();
@@ -1155,32 +1221,32 @@ class DepositRuntime {
                     if (!block) {
                         continue;
                     }
-                    await this.dbClient.query("BEGIN");
-                    await this.dbClient.query(
+                    await this.dbClient.exec("BEGIN");
+                    await this.dbClient.run(
                         `INSERT INTO l2_block_headers (height, hash, parent_hash, timestamp, base_fee_per_gas, gas_limit, gas_used, miner)
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (height) DO NOTHING`,
-                        [
-                            block.number,
-                            block.hash,
-                            block.parentHash,
-                            block.timestamp,
-                            block.baseFeePerGas?.toString(),
-                            block.gasLimit.toString(),
-                            block.gasUsed.toString(),
-                            block.miner
-                        ]
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (height) DO NOTHING`,
+                        block.number,
+                        block.hash,
+                        block.parentHash,
+                        block.timestamp,
+                        block.baseFeePerGas?.toString(),
+                        block.gasLimit.toString(),
+                        block.gasUsed.toString(),
+                        block.miner
                     );
                     for (const tx of block.transactions) {
                         await this.processTxData(tx.hash, tx.data, l2Height, this.dbClient);
                     }
-                    const { rows: doneRows } = await this.dbClient.query("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NOT NULL");
-                    const doneCount = parseInt(doneRows[0].count, 10);
+
+                    const doneResult = await this.dbClient.get<{ "COUNT(*)": number }>("SELECT COUNT(*) FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NOT NULL");
+                    const doneCount = doneResult?.['COUNT(*)'] ?? 0;
+
                     l2TxBar.update(doneCount);
-                    await this.dbClient.query('UPDATE record SET l2_processed_height = $1', [l2Height]);
+                    await this.dbClient.run('UPDATE record SET l2_processed_height = ?', l2Height);
                     l2blockBar.update(l2Height);
                     l2TxBar.update(totalDeposits - pending);
                     l2Height++;
-                    await this.dbClient.query("COMMIT");
+                    await this.dbClient.exec("COMMIT");
                 } catch (error: any) {
                     Logger.error(`[L2 Processor] Error processing block ${l2Height}: ${error.message}`);
                     await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
@@ -1202,11 +1268,197 @@ class DepositRuntime {
         Logger.success('Block data collection complete.');
     }
 
-    private async report() {
+    private async generateReport() {
         Logger.info('\n📈 Generating report...');
-        // TODO: Implement the logic below
-
         Logger.info('Analyzing transaction data from database...');
+
+        const printDelayTable = (title: string, delays: number[]) => {
+            if (delays.length === 0) {
+                Logger.warn(`No data for report: ${title}`);
+                return;
+            }
+            const table = new Table({ head: ["Metric", "Seconds"] });
+            delays.sort((a, b) => a - b);
+            const sum = delays.reduce((a, b) => a + b, 0);
+            const avg = sum / delays.length;
+            const min = delays[0];
+            const max = delays[delays.length - 1];
+
+            const percentile = (p: number) => {
+                const pos = (delays.length - 1) * p;
+                const base = Math.floor(pos);
+                const rest = pos - base;
+                if (delays[base + 1] !== undefined) {
+                    return delays[base] + rest * (delays[base + 1] - delays[base]);
+                } else {
+                    return delays[base];
+                }
+            };
+
+            table.push(
+                ["Count", delays.length],
+                ["Max", max.toFixed(2)],
+                ["Min", min.toFixed(2)],
+                ["Avg", avg.toFixed(2)],
+                ["Median", percentile(0.5).toFixed(2)],
+                ["P95", percentile(0.95).toFixed(2)],
+                ["P99", percentile(0.99).toFixed(2)]
+            );
+            Logger.title(`\n${title}:\n` + table.toString());
+        }
+
+        const printTpsTable = async (title: string, layer: 'l1' | 'l2', blockStats: { height: number, count: number, timestamp: number }[]) => {
+            if (blockStats.length === 0) {
+                Logger.warn(`No data for TPS report: ${title}`);
+                return;
+            }
+
+            const table = new Table({ head: ["Block", "Txs", "Δt (s)", "TPS"] });
+            let lastTimestamp: number;
+
+            // For the first block, try to get the timestamp of the block before it.
+            const firstBlockHeight = blockStats[0].height;
+            const headerTable = layer === 'l1' ? 'l1_block_headers' : 'l2_block_headers';
+            const prevBlockHeader = await this.dbClient.get<{ timestamp: number }>(
+                `SELECT timestamp FROM ${headerTable} WHERE height = ?`,
+                firstBlockHeight - 1
+            );
+
+            if (prevBlockHeader) {
+                lastTimestamp = prevBlockHeader.timestamp;
+            } else {
+                // Fallback if the previous block is not in our DB
+                lastTimestamp = 0;
+            }
+
+            for (const stat of blockStats) {
+                const timeDiff = lastTimestamp > 0 ? (stat.timestamp - lastTimestamp) : 0;
+                const tps = timeDiff > 0 ? (stat.count / timeDiff).toFixed(2) : "N/A";
+                table.push([stat.height, stat.count, timeDiff > 0 ? timeDiff.toFixed(2) : "-", tps]);
+                lastTimestamp = stat.timestamp;
+            }
+
+            Logger.title(`\n${title}:\n` + table.toString());
+
+            const totalTxs = blockStats.reduce((sum, stat) => sum + stat.count, 0);
+            const totalTime = blockStats[blockStats.length - 1].timestamp - blockStats[0].timestamp;
+            const avgTps = totalTime > 0 ? (totalTxs / totalTime).toFixed(2) : "N/A";
+            Logger.info(`Overall Avg TPS: ${avgTps}`);
+        };
+
+        const printOverallTpsTable = async (title: string, layer: 'l1' | 'l2', stats: { count: number, min_block: number, max_block: number } | undefined) => {
+            if (!stats || stats.count <= 1 || !stats.min_block || !stats.max_block) {
+                Logger.warn(`Not enough data for Overall TPS report: ${title}`);
+                return;
+            }
+
+            const headerTable = layer === 'l1' ? 'l1_block_headers' : 'l2_block_headers';
+            const timeCol = layer === 'l1' ? 'created_at' : 'timestamp';
+
+            const maxBlockHeader = await this.dbClient.get<{ ts: number }>(
+                `SELECT ${timeCol} as ts FROM ${headerTable} WHERE height = ?`,
+                stats.max_block
+            );
+            const preMinBlockHeader = await this.dbClient.get<{ ts: number }>(
+                `SELECT ${timeCol} as ts FROM ${headerTable} WHERE height = ?`,
+                stats.min_block - 1
+            );
+
+            if (!maxBlockHeader || !preMinBlockHeader) {
+                Logger.warn(`Could not find block headers for Overall TPS calculation in ${title}.`);
+                return;
+            }
+
+            const table = new Table({ head: ["Metric", "Value"] });
+            const totalTime = maxBlockHeader.ts - preMinBlockHeader.ts;
+            const tps = totalTime > 0 ? (stats.count / totalTime).toFixed(2) : "N/A";
+
+            table.push(
+                ["Total Transactions", stats.count],
+                ["Time Span (s)", totalTime.toFixed(2)],
+                ["Overall TPS", tps],
+                [`Block Range`, `${stats.min_block} -> ${stats.max_block}`]
+            );
+            Logger.title(`\n${title}:\n` + table.toString());
+        };
+
+
+        // L1 TPS Metrics
+        const l1BlockStats = await this.dbClient.all<{ height: number, count: number, timestamp: number }[]>(`
+            SELECT 
+                dtt.l1_block_height as height, 
+                COUNT(dtt.txid) as count,
+                h.timestamp 
+            FROM deposit_transactions_time dtt
+            JOIN l1_block_headers h ON dtt.l1_block_height = h.height
+            WHERE dtt.type = 'deposit' AND dtt.l1_block_height IS NOT NULL
+            GROUP BY dtt.l1_block_height
+            ORDER BY dtt.l1_block_height ASC;
+        `);
+        await printTpsTable("L1 Deposit Transaction Throughput", 'l1', l1BlockStats);
+
+        // L2 TPS Metrics
+        const l2BlockStats = await this.dbClient.all<{ height: number, count: number, timestamp: number }[]>(`
+            SELECT 
+                dtt.l2_block_height as height, 
+                COUNT(dtt.txid) as count,
+                h.timestamp
+            FROM deposit_transactions_time dtt
+            JOIN l2_block_headers h ON dtt.l2_block_height = h.height
+            WHERE dtt.type = 'deposit' AND dtt.l2_block_height IS NOT NULL
+            GROUP BY dtt.l2_block_height
+            ORDER BY dtt.l2_block_height ASC;
+        `);
+        await printTpsTable("L2 Deposit Transaction Throughput", 'l2', l2BlockStats);
+
+        // Overall L1 TPS
+        const l1OverallStats = await this.dbClient.get<{ count: number, min_block: number, max_block: number }>(`
+            SELECT COUNT(*) as count, MIN(l1_block_height) as min_block, MAX(l1_block_height) as max_block
+            FROM deposit_transactions_time
+            WHERE type = 'deposit' AND l1_block_height IS NOT NULL
+        `);
+        await printOverallTpsTable("L1 Overall TPS", 'l1', l1OverallStats);
+
+        // Overall L2 TPS
+        const l2OverallStats = await this.dbClient.get<{ count: number, min_block: number, max_block: number }>(`
+            SELECT COUNT(*) as count, MIN(l2_block_height) as min_block, MAX(l2_block_height) as max_block
+            FROM deposit_transactions_time
+            WHERE type = 'deposit' AND l2_block_height IS NOT NULL
+        `);
+        await printOverallTpsTable("L2 Overall TPS", 'l2', l2OverallStats);
+
+        // Metric 1: delays (l2_time - l1_time)
+        const delaysResult = await this.dbClient.all<{ delay: number }[]>(`
+            SELECT (l2_time - l1_time) as delay
+            FROM deposit_transactions_time
+            WHERE l1_time IS NOT NULL AND l2_time IS NOT NULL AND type = 'deposit'
+        `);
+        const delays = delaysResult.map(r => Number(r.delay));
+        printDelayTable("L1 Inclusion to L2 Inclusion Delay (delays)", delays);
+
+        const l1Confirmations = this.l1Confirmations;
+
+        // Metric 2: l1_inclusion_to_safe_confirmation_delays
+        const l1SafeConfirmDelayResult = await this.dbClient.all<{ delay: number }[]>(`
+            SELECT (h_safe.created_at - h_inclusion.created_at) as delay
+            FROM deposit_transactions_time dtt
+            JOIN l1_block_headers h_inclusion ON dtt.l1_block_height = h_inclusion.height
+            JOIN l1_block_headers h_safe ON dtt.l1_block_height + ? = h_safe.height
+            WHERE dtt.type = 'deposit'
+        `, l1Confirmations);
+        const l1SafeConfirmDelays = l1SafeConfirmDelayResult.map(r => Number(r.delay));
+        printDelayTable(`L1 Inclusion to L1 Safe Confirmation Delay (${l1Confirmations} blocks)`, l1SafeConfirmDelays,);
+
+        // Metric 3: l1_safe_confirmation_to_l2_inclusion_delays
+        const l1SafeToL2DelayResult = await this.dbClient.all<{ delay: number }[]>(`
+            SELECT (dtt.l2_time - h_safe.created_at) as delay
+            FROM deposit_transactions_time dtt
+            JOIN l1_block_headers h_safe ON dtt.l1_block_height + ? = h_safe.height
+            WHERE dtt.l2_time IS NOT NULL AND dtt.type = 'deposit'
+        `, l1Confirmations);
+        const l1SafeToL2Delays = l1SafeToL2DelayResult.map(r => Number(r.delay));
+        printDelayTable("L1 Safe Confirmation to L2 Inclusion Delay", l1SafeToL2Delays,);
+
 
         Logger.success('Report generated.');
     }
@@ -1214,46 +1466,47 @@ class DepositRuntime {
 }
 
 export default DepositRuntime;
+
 // Standalone test entry
 if (require.main === module) {
-    const DogeOsTestNet = {
-        l2RpcUrl: "https://rpc.testnet.dogeos.com",
-        bridgeAddress: "2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
-    };
-    const perfNet = {
-        l2RpcUrl: "https://rpc.perf.unifra.xyz",
-        bridgeAddress: "2N3wupvhudcDHsU2czaTPTm7HEmBucGnyj2"
-    };
-
-    let config = DogeOsTestNet;
-/*
-username = "fBJhRsMr"
-password = "btmiSyJ4YRiWNgwr"
-*/
     (async () => {
         // TODO: Replace these with your actual test parameters
-        const l1RpcUrl = process.env.L1_RPC_URL || 'https://fBJhRsMr:btmiSyJ4YRiWNgwr@dogecoin.qiaoxiaorui.org';
-        const masterWif = process.env.WIF || 'ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX';
-        const agentWif = process.env.WIF || 'co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM';
-        const txCount = Number(process.env.TX_COUNT || 600);
-        const dbUrl = process.env.DB_URL || 'postgresql://postgres:123456@localhost:5432/dogeos';
+        const l1RpcUrl = process.env.L1_RPC_URL || '';
+        const zmqUrl = process.env.ZMQ_URL || '';
+        const masterWif = process.env.WIF_MASTER || '';
+        const agentWif = process.env.WIF_AGENT || '';
+        const txCount = Number(process.env.TX_COUNT || 100);
+        const dbUrl = process.env.DB_URL || 'deposit.db';
         const network = process.env.NETWORK || 'testnet';
         const amountPerTxInSatoshi = BigInt(process.env.AMOUNT_PER_TX || 201000000);
-        const depositTargetAddress = process.env.DEPOSIT_TARGET_ADDRESS || '0xd98f41da0f5b229729ed7bf469ea55d98d11f467';
+        const depositTargetAddress = process.env.DEPOSIT_TARGET_ADDRESS || '';
+        const l2RpcUrl = process.env.L2_RPC_URL || "";
+        const l1Confirmations = Number(process.env.L1_CONFIRMATIONS || 120);
+        const bridgeAddress = process.env.BRIDGE_ADDRESS || "";
 
         const runtime = new DepositRuntime(
             l1RpcUrl,
-            config.l2RpcUrl,
+            l2RpcUrl,
+            zmqUrl,
             masterWif,
             agentWif,
             txCount,
             dbUrl,
             network,
             amountPerTxInSatoshi,
-            config.bridgeAddress,
+            bridgeAddress,
             depositTargetAddress,
+            l1Confirmations
         );
-        await runtime.run(0);
+
+        // Parse step from command line arguments, default to 0
+        const stepArg = process.argv.length > 2 ? process.argv[2] : '0';
+        const step = parseInt(stepArg, 10);
+        if (isNaN(step)) {
+            Logger.error(`Invalid step argument provided: '${stepArg}'. Must be a number.`);
+            return;
+        }
+        await runtime.run(step);
 
     })();
 }

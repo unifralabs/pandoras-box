@@ -80,7 +80,7 @@ class Logger {
 
     static error(s: string) {
         if (!Logger.shouldLog('ERROR')) return;
-
+        console.log(chalk.red(s));
         Logger.writeToFile('ERROR', s);
     }
 

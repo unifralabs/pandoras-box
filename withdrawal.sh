@@ -12,7 +12,7 @@ subaccounts=300
 concurrency=200
 
 RPC="https://rpc.perf.unifra.xyz"
-zmq="tcp://k8s-default-dogecoin-d42273c909-1efdf5d8964aa3b0.elb.us-west-2.amazonaws.com:28332"
+zmq="tcp://localhost:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467 This is the master address for the MNEMONIC; make sure it has enough coins to fund subaccounts
 

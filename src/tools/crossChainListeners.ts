@@ -2,12 +2,14 @@ import BetterSqlite3 from "better-sqlite3";
 import cliProgress from "cli-progress";
 import Table from "cli-table3";
 import { Command } from 'commander';
-import crypto from "crypto";
 import { ethers } from "ethers";
 import process from "node:process";
 import { Subscriber } from "zeromq";
 import MoatABI from "../abi/moat";
 import Logger from "../logger/logger";
+import crypto from "crypto";
+
+import { getBlockHashFromRawBlock } from "./blockhash";
 type DB = InstanceType<typeof BetterSqlite3>;
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
@@ -282,15 +284,7 @@ export async function startL1Listener(
             continue;
         }
 
-        const header = message.subarray(0, 80);
-        const hashBuffer = crypto
-            .createHash("sha256")
-            .update(
-                crypto.createHash("sha256").update(header).digest()
-            )
-            .digest();
-        const blockHash = Buffer.from(hashBuffer).reverse().toString("hex");
-
+        const blockHash = getBlockHashFromRawBlock(message);
         const height = extractHeightFromBlock(message);
 
         const heightInfo = height !== null ? `height=${height}` : "height=unknown";
@@ -564,7 +558,7 @@ export function startCrossChainListeners(opts: {
     transactions: TransactionRequest[]
 }): Promise<void> {
     const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress } = opts;
-    const db = createTxDatabase(opts.dbPath ?? "doge.db");
+    const db = createTxDatabase(opts.dbPath ?? "withdrawal.db");
     // db.prepare(`DELETE FROM txs`).run();
 
     for (const tx of opts.transactions) {
@@ -763,7 +757,7 @@ if (require.main === module) {
         .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint', "tcp://10.8.0.25:30495")
         .option('--l2-rpc <url>', 'L2 RPC endpoint', "https://rpc.dg.unifra.xyz")
         .option('--moat-address <address>', 'Moat contract address', "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2")
-        .option('--db-path <path>', 'Path to SQLite database file', "doge.db")
+        .option('--db-path <path>', 'Path to SQLite database file', "withdrawal.db")
         .parse(process.argv);
 
     const options = program.opts();
