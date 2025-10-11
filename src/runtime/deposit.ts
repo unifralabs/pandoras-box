@@ -1218,14 +1218,14 @@ export default DepositRuntime;
 if (require.main === module) {
     const DogeOsTestNet = {
         l2RpcUrl: "https://rpc.testnet.dogeos.com",
-        bridgeAddress: "2Mu6Pi8NATjSRCW6DTcrCRXhZQiVSL4z7ak"
+        bridgeAddress: "2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
     };
     const perfNet = {
         l2RpcUrl: "https://rpc.perf.unifra.xyz",
         bridgeAddress: "2N3wupvhudcDHsU2czaTPTm7HEmBucGnyj2"
     };
 
-    let config = perfNet;
+    let config = DogeOsTestNet;
 /*
 username = "fBJhRsMr"
 password = "btmiSyJ4YRiWNgwr"
