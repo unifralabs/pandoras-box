@@ -3,9 +3,9 @@
 #yarn install
 #yarn build
 rm -rf out/pandoras-box.log
-transactions=10000
-batch=150
-subaccounts=200
+transactions=100
+batch=50
+subaccounts=100
 concurrency=100
 
 RPC="https://rpc.testnet.dogeos.com"
