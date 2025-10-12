@@ -1,7 +1,7 @@
 #!/bin/bash
 
-#yarn install
-#yarn build
+yarn install
+yarn build
 rm -rf out/pandoras-box.log
 transactions=100
 batch=50
@@ -110,19 +110,18 @@ runDeposit() {
     npx ts-node src/runtime/deposit.ts
 }
 
-runDeposit
-exit 0
+getPending
 
-#runWithDrawal
-#getPending
+# runDeposit
+
 #clearPending
-# exit 0
+#runWithDrawal
 
+#clearPending
 #runEOA
-# getPending
-# exit 0
 
-# sleep 30
+#clearPending
 #runERC20
 
+#clearPending
 #runERC721

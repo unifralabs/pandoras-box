@@ -878,20 +878,20 @@ class DepositRuntime {
             return response.data;
         } catch (error: any) {
             const duration = Date.now() - Date.now();  // This will be 0, but keeping for consistency
-            Logger.error(`❌ L1 RPC request failed after ${duration}ms`);
-            Logger.error(`🔗 Request to: ${url.hostname}`);
-            Logger.error(`📡 Method: ${methodName}`);
-            Logger.error(`📡 Error type: ${error.code || 'Unknown'}`);
+            Logger.info(`❌ L1 RPC request failed after ${duration}ms`);
+            Logger.info(`🔗 Request to: ${url.hostname}`);
+            Logger.info(`📡 Method: ${methodName}`);
+            Logger.info(`📡 Error type: ${error.code || 'Unknown'}`);
 
             if (error.response) {
-                Logger.error(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
-                Logger.error(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
+                Logger.info(`📄 Response status: ${error.response.status} ${error.response.statusText}`);
+                Logger.info(`📋 Response headers: ${JSON.stringify(error.response.headers)}`);
 
                 // Log response data but limit size
                 const responseStr = typeof error.response.data === 'string'
                     ? error.response.data
                     : JSON.stringify(error.response.data);
-                Logger.error(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
+                Logger.info(`📝 Response data (first 1000 chars): ${responseStr.substring(0, 1000)}`);
             } else if (error.request) {
                 Logger.error(`🔌 No response received from L1 RPC server`);
                 Logger.error(`📡 Request config: ${JSON.stringify({
