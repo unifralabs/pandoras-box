@@ -3,9 +3,9 @@
 yarn install
 yarn build
 rm -rf out/pandoras-box.log
-transactions=100
+transactions=5000
 batch=50
-subaccounts=100
+subaccounts=500
 concurrency=100
 
 RPC="https://rpc.testnet.dogeos.com"
@@ -89,7 +89,7 @@ runWithDrawal(){
     -c $concurrency \
     --moat-address $MOAT_CONTRACT \
     --mode WITHDRAWAL \
-    --target-address "njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF" \
+    --target-address "ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb" \
     --doge-zmq-endpoint "${zmq}" \
     -o ./${out}/WITHDRAWAL_${transactions}_${batch}_${subaccounts}.json
 }
@@ -99,7 +99,7 @@ runDeposit() {
     export ZMQ_URL="tcp://localhost:28332"
     export WIF_MASTER="ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX"
     export WIF_AGENT='co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM'
-    export TX_COUNT=1000
+    export TX_COUNT=10000
     export DB_URL="deposit.db"
     export NETWORK="testnet"
     export AMOUNT_PER_TX=201000000
@@ -107,12 +107,12 @@ runDeposit() {
     export L2_RPC_URL=${RPC}
     export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
     export L1_CONFIRMATIONS=120
-    npx ts-node src/runtime/deposit.ts
+    npx ts-node src/runtime/deposit.ts 3
 }
 
-getPending
+#getPending
 
-# runDeposit
+runDeposit
 
 #clearPending
 #runWithDrawal

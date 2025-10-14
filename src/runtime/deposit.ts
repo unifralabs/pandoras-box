@@ -240,32 +240,15 @@ class DepositRuntime {
         CREATE TABLE IF NOT EXISTS l1_block_headers (
             height BIGINT PRIMARY KEY,
             hash VARCHAR(66) NOT NULL UNIQUE,
+            previous_hash VARCHAR(64) NOT NULL,
             timestamp BIGINT NOT NULL,
             created_at BIGINT NOT NULL
         );`;
-
-        const createDepositTimeView = `
-        CREATE VIEW deposit_transactions_time AS
-        SELECT
-            dt.*,
-            l1h.timestamp AS l1_time,
-            l2h.timestamp AS l2_time
-        FROM
-            deposit_transactions dt
-        LEFT JOIN
-            l1_block_headers l1h ON dt.l1_block_height = l1h.height
-        LEFT JOIN
-            l2_block_headers l2h ON dt.l2_block_height = l2h.height
-        WHERE dt.type = 'deposit';
-        `;
-
 
         await this.dbClient.exec(createTransactionsTable);
         await this.dbClient.exec(createL2BlockHeadersTable);
         await this.dbClient.exec(createL1BlockHeadersTable);
         await this.dbClient.exec(createRecordTable);
-        await this.dbClient.exec(`DROP VIEW IF EXISTS deposit_transactions_time;`);
-        await this.dbClient.exec(createDepositTimeView);
 
         Logger.success('Database schema is ready.');
     }
@@ -1163,7 +1146,13 @@ class DepositRuntime {
                     const { result: indexingHash } = await this.l1RpcRequest({ method: 'getblockhash', params: [l1Height] });
                     const { result: block } = await this.l1RpcRequest({ method: 'getblock', params: [indexingHash, 1] });
 
-                    await this.dbClient.exec("BEGIN;");
+                    // Insert L1 block header directly, ensuring data consistency
+                    if (block && block.time && block.previousblockhash) {
+                        await this.dbClient.run(
+                            `INSERT INTO l1_block_headers (height, hash, previous_hash, timestamp, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(height) DO NOTHING`,
+                            l1Height, indexingHash, block.previousblockhash, block.time, Math.floor(Date.now() / 1000)
+                        );
+                    }
                     if (block && block.tx) {
                         for (const txid of block.tx) {
                             // Logger.info(`txid=${txid}, txid.toString()=${txid.toString()}},l1Height=${l1Height},indexingHash=${indexingHash}`);
@@ -1176,17 +1165,18 @@ class DepositRuntime {
                         }
                     }
                     await this.dbClient.run('UPDATE record SET l1_processed_height = ?', l1Height);
-                    await this.dbClient.exec("COMMIT;");
                     Logger.info(`[L1 Processor] indexed ${l1Height}`);
                     l1Height++;
                     l1BlockBar.update(l1Height);
 
-                    const pendingResult = await this.dbClient.get<{ pending: number }>("SELECT COUNT(*) AS pending FROM deposit_transactions WHERE type='deposit' AND l1_block_height IS NULL");
-
-                    if (pendingResult?.pending === 0) {
-                        Logger.info('[L1 Processor] All deposit transactions found on L1. Finishing.');
-                        l1BlockBar.stop();
-                        return;
+                    // Check if L2 processing is complete
+                    const l2DoneResult = await this.dbClient.get<{ pending: number }>("SELECT COUNT(*) AS pending FROM deposit_transactions WHERE type='deposit' AND l2_block_height IS NULL");
+                    if (l2DoneResult?.pending === 0) {
+                        const l2Processed = await this.dbClient.get<{ height: number }>("SELECT MAX(l2_processed_height) as height FROM record");
+                        if (l2Processed && l2Processed.height && l1Height > l2Processed.height + this.l1Confirmations) {
+                            Logger.info('[L1 Processor] L2 processing is complete and L1 has scanned past the confirmation window. Finishing.');
+                            return;
+                        }
                     }
 
                 } catch (error: any) {
@@ -1221,7 +1211,6 @@ class DepositRuntime {
                     if (!block) {
                         continue;
                     }
-                    await this.dbClient.exec("BEGIN");
                     await this.dbClient.run(
                         `INSERT INTO l2_block_headers (height, hash, parent_hash, timestamp, base_fee_per_gas, gas_limit, gas_used, miner)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (height) DO NOTHING`,
@@ -1246,7 +1235,6 @@ class DepositRuntime {
                     l2blockBar.update(l2Height);
                     l2TxBar.update(totalDeposits - pending);
                     l2Height++;
-                    await this.dbClient.exec("COMMIT");
                 } catch (error: any) {
                     Logger.error(`[L2 Processor] Error processing block ${l2Height}: ${error.message}`);
                     await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
@@ -1271,6 +1259,29 @@ class DepositRuntime {
     private async generateReport() {
         Logger.info('\n📈 Generating report...');
         Logger.info('Analyzing transaction data from database...');
+
+        // Create the view just for this report
+        const createDepositTimeView = `
+        CREATE VIEW deposit_transactions_time AS
+        SELECT
+            dt.txid,
+            dt.l1_block_height,
+            dt.l2_block_height,
+            l1h_inclusion.timestamp AS l1_time,
+            l2h.timestamp AS l2_time,
+            l1h_safe.timestamp AS l1_safe_time
+        FROM
+            deposit_transactions dt
+        LEFT JOIN
+            l1_block_headers l1h_inclusion ON dt.l1_block_height = l1h_inclusion.height
+        LEFT JOIN
+            l2_block_headers l2h ON dt.l2_block_height = l2h.height
+        LEFT JOIN
+            l1_block_headers l1h_safe ON dt.l1_block_height + ${this.l1Confirmations} = l1h_safe.height
+        WHERE dt.type = 'deposit';
+        `;
+        await this.dbClient.exec(`DROP VIEW IF EXISTS deposit_transactions_time;`);
+        await this.dbClient.exec(createDepositTimeView);
 
         const printDelayTable = (title: string, delays: number[]) => {
             if (delays.length === 0) {
@@ -1307,43 +1318,48 @@ class DepositRuntime {
             Logger.title(`\n${title}:\n` + table.toString());
         }
 
-        const printTpsTable = async (title: string, layer: 'l1' | 'l2', blockStats: { height: number, count: number, timestamp: number }[]) => {
+        const printTpsTable = async (title: string, layer: 'l1' | 'l2', blockStats: { height: number, count: number, timestamp: number }[], overallStats: { count: number, min_block: number, max_block: number } | undefined) => {
             if (blockStats.length === 0) {
                 Logger.warn(`No data for TPS report: ${title}`);
                 return;
             }
 
             const table = new Table({ head: ["Block", "Txs", "Δt (s)", "TPS"] });
-            let lastTimestamp: number;
 
-            // For the first block, try to get the timestamp of the block before it.
-            const firstBlockHeight = blockStats[0].height;
             const headerTable = layer === 'l1' ? 'l1_block_headers' : 'l2_block_headers';
-            const prevBlockHeader = await this.dbClient.get<{ timestamp: number }>(
-                `SELECT timestamp FROM ${headerTable} WHERE height = ?`,
-                firstBlockHeight - 1
-            );
+            const timeCol = 'timestamp';
 
-            if (prevBlockHeader) {
-                lastTimestamp = prevBlockHeader.timestamp;
-            } else {
-                // Fallback if the previous block is not in our DB
-                lastTimestamp = 0;
+            // Fetch all relevant headers in one go
+            const minHeight = blockStats[0].height;
+            const maxHeight = blockStats[blockStats.length - 1].height;
+            const headers = await this.dbClient.all<{ height: number, ts: number }[]>(
+                `SELECT height, ${timeCol} as ts FROM ${headerTable} WHERE height BETWEEN ? AND ? ORDER BY height ASC`,
+                minHeight - 1, maxHeight
+            );
+            const timestampMap: Record<number, number> = {};
+            for (const h of headers) {
+                timestampMap[h.height] = h.ts;
             }
 
             for (const stat of blockStats) {
-                const timeDiff = lastTimestamp > 0 ? (stat.timestamp - lastTimestamp) : 0;
+                const prevTimestamp = timestampMap[stat.height - 1];
+                const timeDiff = prevTimestamp ? (stat.timestamp - prevTimestamp) : 0;
                 const tps = timeDiff > 0 ? (stat.count / timeDiff).toFixed(2) : "N/A";
                 table.push([stat.height, stat.count, timeDiff > 0 ? timeDiff.toFixed(2) : "-", tps]);
-                lastTimestamp = stat.timestamp;
+            }
+
+            // Calculate and print overall average TPS
+            if (overallStats && overallStats.count > 0 && overallStats.min_block && overallStats.max_block) {
+                const firstBlockTs = timestampMap[overallStats.min_block];
+                const lastBlockTs = timestampMap[overallStats.max_block];
+                if (firstBlockTs && lastBlockTs && firstBlockTs < lastBlockTs) {
+                    const totalTime = lastBlockTs - firstBlockTs;
+                    const avgTps = totalTime > 0 ? (overallStats.count / totalTime).toFixed(2) : "N/A";
+                    table.push(['---', '---', '---', '---'], ['Overall Avg', overallStats.count, totalTime.toFixed(2), avgTps]);
+                }
             }
 
             Logger.title(`\n${title}:\n` + table.toString());
-
-            const totalTxs = blockStats.reduce((sum, stat) => sum + stat.count, 0);
-            const totalTime = blockStats[blockStats.length - 1].timestamp - blockStats[0].timestamp;
-            const avgTps = totalTime > 0 ? (totalTxs / totalTime).toFixed(2) : "N/A";
-            Logger.info(`Overall Avg TPS: ${avgTps}`);
         };
 
         const printOverallTpsTable = async (title: string, layer: 'l1' | 'l2', stats: { count: number, min_block: number, max_block: number } | undefined) => {
@@ -1353,7 +1369,7 @@ class DepositRuntime {
             }
 
             const headerTable = layer === 'l1' ? 'l1_block_headers' : 'l2_block_headers';
-            const timeCol = layer === 'l1' ? 'created_at' : 'timestamp';
+            const timeCol = 'timestamp';
 
             const maxBlockHeader = await this.dbClient.get<{ ts: number }>(
                 `SELECT ${timeCol} as ts FROM ${headerTable} WHERE height = ?`,
@@ -1388,14 +1404,13 @@ class DepositRuntime {
             SELECT 
                 dtt.l1_block_height as height, 
                 COUNT(dtt.txid) as count,
-                h.timestamp 
+                h.timestamp as timestamp
             FROM deposit_transactions_time dtt
             JOIN l1_block_headers h ON dtt.l1_block_height = h.height
-            WHERE dtt.type = 'deposit' AND dtt.l1_block_height IS NOT NULL
+            WHERE dtt.l1_block_height IS NOT NULL
             GROUP BY dtt.l1_block_height
             ORDER BY dtt.l1_block_height ASC;
         `);
-        await printTpsTable("L1 Deposit Transaction Throughput", 'l1', l1BlockStats);
 
         // L2 TPS Metrics
         const l2BlockStats = await this.dbClient.all<{ height: number, count: number, timestamp: number }[]>(`
@@ -1405,33 +1420,36 @@ class DepositRuntime {
                 h.timestamp
             FROM deposit_transactions_time dtt
             JOIN l2_block_headers h ON dtt.l2_block_height = h.height
-            WHERE dtt.type = 'deposit' AND dtt.l2_block_height IS NOT NULL
+            WHERE dtt.l2_block_height IS NOT NULL
             GROUP BY dtt.l2_block_height
             ORDER BY dtt.l2_block_height ASC;
         `);
-        await printTpsTable("L2 Deposit Transaction Throughput", 'l2', l2BlockStats);
 
         // Overall L1 TPS
         const l1OverallStats = await this.dbClient.get<{ count: number, min_block: number, max_block: number }>(`
             SELECT COUNT(*) as count, MIN(l1_block_height) as min_block, MAX(l1_block_height) as max_block
             FROM deposit_transactions_time
-            WHERE type = 'deposit' AND l1_block_height IS NOT NULL
+            WHERE l1_block_height IS NOT NULL
         `);
-        await printOverallTpsTable("L1 Overall TPS", 'l1', l1OverallStats);
+        await printTpsTable("L1 Deposit Transaction Throughput", 'l1', l1BlockStats, l1OverallStats);
 
         // Overall L2 TPS
         const l2OverallStats = await this.dbClient.get<{ count: number, min_block: number, max_block: number }>(`
             SELECT COUNT(*) as count, MIN(l2_block_height) as min_block, MAX(l2_block_height) as max_block
             FROM deposit_transactions_time
-            WHERE type = 'deposit' AND l2_block_height IS NOT NULL
+            WHERE l2_block_height IS NOT NULL
         `);
+        await printTpsTable("L2 Deposit Transaction Throughput", 'l2', l2BlockStats, l2OverallStats);
+
+        await printOverallTpsTable("L1 Overall TPS", 'l1', l1OverallStats);
+
         await printOverallTpsTable("L2 Overall TPS", 'l2', l2OverallStats);
 
         // Metric 1: delays (l2_time - l1_time)
         const delaysResult = await this.dbClient.all<{ delay: number }[]>(`
             SELECT (l2_time - l1_time) as delay
             FROM deposit_transactions_time
-            WHERE l1_time IS NOT NULL AND l2_time IS NOT NULL AND type = 'deposit'
+            WHERE l1_time IS NOT NULL AND l2_time IS NOT NULL
         `);
         const delays = delaysResult.map(r => Number(r.delay));
         printDelayTable("L1 Inclusion to L2 Inclusion Delay (delays)", delays);
@@ -1440,22 +1458,20 @@ class DepositRuntime {
 
         // Metric 2: l1_inclusion_to_safe_confirmation_delays
         const l1SafeConfirmDelayResult = await this.dbClient.all<{ delay: number }[]>(`
-            SELECT (h_safe.created_at - h_inclusion.created_at) as delay
+            SELECT (dtt.l1_safe_time - dtt.l1_time) as delay
             FROM deposit_transactions_time dtt
             JOIN l1_block_headers h_inclusion ON dtt.l1_block_height = h_inclusion.height
-            JOIN l1_block_headers h_safe ON dtt.l1_block_height + ? = h_safe.height
-            WHERE dtt.type = 'deposit'
-        `, l1Confirmations);
+            WHERE dtt.l1_safe_time IS NOT NULL
+        `);
         const l1SafeConfirmDelays = l1SafeConfirmDelayResult.map(r => Number(r.delay));
         printDelayTable(`L1 Inclusion to L1 Safe Confirmation Delay (${l1Confirmations} blocks)`, l1SafeConfirmDelays,);
 
         // Metric 3: l1_safe_confirmation_to_l2_inclusion_delays
         const l1SafeToL2DelayResult = await this.dbClient.all<{ delay: number }[]>(`
-            SELECT (dtt.l2_time - h_safe.created_at) as delay
+            SELECT (dtt.l2_time - dtt.l1_safe_time) as delay
             FROM deposit_transactions_time dtt
-            JOIN l1_block_headers h_safe ON dtt.l1_block_height + ? = h_safe.height
-            WHERE dtt.l2_time IS NOT NULL AND dtt.type = 'deposit'
-        `, l1Confirmations);
+            WHERE dtt.l2_time IS NOT NULL AND dtt.l1_safe_time IS NOT NULL
+        `);
         const l1SafeToL2Delays = l1SafeToL2DelayResult.map(r => Number(r.delay));
         printDelayTable("L1 Safe Confirmation to L2 Inclusion Delay", l1SafeToL2Delays,);
 
