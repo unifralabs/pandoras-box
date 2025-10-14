@@ -303,12 +303,15 @@ class StatCollector {
                     if (waitStartTime == 0) {
                         waitStartTime = Date.now();
                     }
-                    else if (Date.now() - waitStartTime > 10000) {
+                    else if (Date.now() - waitStartTime > 600000) {
                         scanBar.stop();
                         break;
                     }
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
                     continue;
                 } else {
+                    waitStartTime = 0;
                     scanBar.update({ scannedBlocks: blockNumber });
                     blockNumber++;
                     if (block.transactions) {
