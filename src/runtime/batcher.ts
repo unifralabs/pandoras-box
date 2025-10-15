@@ -1,6 +1,9 @@
 import axios from 'axios';
 import { SingleBar } from 'cli-progress';
 import Logger from '../logger/logger';
+import { TransactionRequest } from '@ethersproject/providers';
+import { senderAccount } from './signer';
+import { BigNumber } from '@ethersproject/bignumber';
 
 class Batcher {
     // Generates batches of items based on the passed in
@@ -20,13 +23,20 @@ class Batcher {
     }
 
     static async batchTransactions(
-        signedTxsByAccount: string[][],
+        txsByAccount: TransactionRequest[][],
+        accounts: senderAccount[],
         batchSize: number,
         url: string,
         _concurrency?: number,
         tps?: number
     ): Promise<string[]> {
-        const senderQueues = signedTxsByAccount;
+        // Map accounts to their addresses for quick lookup
+        const accountMap = new Map<string, senderAccount>();
+        for (const acc of accounts) {
+            accountMap.set(acc.getAddress().toLowerCase(), acc);
+        }
+
+        const senderQueues = txsByAccount;
 
         Logger.info(
             `Sending transactions for ${senderQueues.length} accounts...`
@@ -87,31 +97,36 @@ class Batcher {
                 senderQueues.length
             );
 
+            // Define a type for our transaction jobs
+            type TxJob = { tx: TransactionRequest, account: senderAccount };
+
             // 1. Prepare batches for all workers before starting them.
-            //    `allBatches` is an array where each element is the list of batches for a single worker.
-            const allBatches: string[][][] = [];
-            for (let i = 0; i < effectiveConcurrency; i++) {
-                allBatches.push([]); // Initialize a batch list for each worker
-            }
-
-            // 2. Populate the batches using the efficient packing strategy.
-            for (let accountIdx = 0; accountIdx < senderQueues.length; accountIdx++) {
-                const queue = senderQueues[accountIdx];
-                const chargeWorker = accountIdx % effectiveConcurrency;
-                const workerBatchList = allBatches[chargeWorker];
-
-                for (const tx of queue) {
-                    const lastBatch = workerBatchList.at(-1);
-
-                    if (lastBatch && lastBatch.length < batchSize) {
-                        // If the last batch for this worker exists and is not full, add to it.
-                        lastBatch.push(tx);
-                    } else {
-                        // Otherwise, create a new batch for this worker.
-                        workerBatchList.push([tx]);
-                    }
+            const allBatches: TxJob[][][] = [];
+            for (let i = 0; i < senderQueues.length; i++) {
+                const workerIndex = i % effectiveConcurrency;
+                if (!allBatches[workerIndex]) {
+                    allBatches[workerIndex] = [];
                 }
+                const account = accounts[i];
+                const jobs: TxJob[] = senderQueues[i].map(tx => ({ tx, account }));
+                const jobBatches = Batcher.generateBatches(jobs, batchSize);
+                allBatches[workerIndex].push(...jobBatches);
             }
+
+            // The previous batching logic could split transactions from the same account across different workers,
+            // leading to "replacement transaction underpriced" errors due to race conditions.
+            // The new logic ensures all transactions for a single account are assigned to the same worker.
+            //
+            // for (let accountIdx = 0; accountIdx < senderQueues.length; accountIdx++) {
+            //     const queue = senderQueues[accountIdx];
+            //     const chargeWorker = accountIdx % effectiveConcurrency;
+            //     const workerBatchList = allBatches[chargeWorker];
+            //
+            //     for (const tx of queue) {
+            //         // ... (old logic removed)
+            //     }
+            // }
+
 
             // 3. Update the progress bar with the accurately calculated total number of batches.
             const totalBatches = allBatches.reduce((sum, workerBatches) => sum + workerBatches.length, 0);
@@ -124,66 +139,83 @@ class Batcher {
             const workers: Promise<void>[] = [];
             const worker = async (workerId: number) => {
                 const batchesForThisWorker = allBatches[workerId];
-                let nextId = 0; // Each worker can have its own ID sequence
 
                 for (const batch of batchesForThisWorker) {
-                    const payloadItems = batch.map((signedTx) => {
-                        const id = nextId++;
-                        return JSON.stringify({
-                            jsonrpc: '2.0',
-                            method: 'eth_sendRawTransaction',
-                            params: [signedTx],
-                            id,
+                    let retries = 0;
+                    const MAX_RETRIES = 3;
+                    let currentBatch = batch;
+
+                    while (retries < MAX_RETRIES && currentBatch.length > 0) {
+                        const jobsToProcess = currentBatch;
+                        currentBatch = []; // Prepare for the next retry iteration
+
+                        // Sign transactions just-in-time
+                        const signedTxs = await Promise.all(
+                            jobsToProcess.map(job => job.account.wallet.signTransaction(job.tx))
+                        );
+
+                        const payloadItems = signedTxs.map((signedTx, index) => {
+                            const id = `${workerId}-${jobsToProcess[index].tx.nonce}`;
+                            return JSON.stringify({
+                                jsonrpc: '2.0',
+                                method: 'eth_sendRawTransaction',
+                                params: [signedTx],
+                                id,
+                            });
                         });
-                    });
-                    const payload = `[${payloadItems.join(',')}]`;
+                        const payload = `[${payloadItems.join(',')}]`;
 
-                    try {
-                        // Apply global TPS throttle based on batch size (number of txs)
-                        await throttler(batch.length);
-                        const resp = await axios({
-                            url: url,
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                            },
-                            data: payload,
-                        });
-                        batchBar.increment();
+                        try {
+                            await throttler(jobsToProcess.length);
+                            const resp = await axios({
+                                url: url,
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                data: payload,
+                            });
 
-                        if (!resp || !resp.data) {
-                            batchErrors.push(
-                                `Batch for worker #${workerId}: Invalid response or missing data.`
-                            );
-                            continue;
-                        }
-
-                        for (const cnt of resp.data) {
-                            // eslint-disable-next-line no-prototype-builtins
-                            if (cnt.hasOwnProperty('error')) {
-                                batchErrors.push(
-                                    `Tx Error (worker #${workerId}, id: ${cnt.id}): ${cnt.error.message}`
-                                );
-                            } else {
-                                txHashes.push(cnt.result);
+                            if (!resp || !resp.data) {
+                                batchErrors.push(`Batch for worker #${workerId}: Invalid response.`);
+                                continue;
                             }
+
+                            for (const cnt of resp.data) {
+                                // eslint-disable-next-line no-prototype-builtins
+                                if (cnt.hasOwnProperty('error')) {
+                                    const errorMessage = cnt.error.message;
+                                    const isUnderpriced = errorMessage.includes('replacement transaction underpriced');
+                                    const isNonceTooLow = errorMessage.includes('nonce too low');
+
+                                    if ((isUnderpriced || isNonceTooLow) && retries < MAX_RETRIES - 1) {
+                                        // Find the original job to retry
+                                        const jobToRetry = jobsToProcess.find(job => `${workerId}-${job.tx.nonce}` === cnt.id);
+                                        if (jobToRetry) {
+                                            // Increase gas price by 20% for retry
+                                            const oldGasPrice = BigNumber.from(jobToRetry.tx.gasPrice);
+                                            const newGasPrice = oldGasPrice.mul(120).div(100);
+                                            jobToRetry.tx.gasPrice = newGasPrice;
+                                            currentBatch.push(jobToRetry); // Add to the list for the next retry attempt
+                                            Logger.warn(`Tx (nonce: ${jobToRetry.tx.nonce}) underpriced. Retrying with higher gas: ${newGasPrice.toString()}`);
+                                        }
+                                    } else {
+                                        batchErrors.push(`Tx Error (worker #${workerId}, id: ${cnt.id}): ${errorMessage}`);
+                                        batchBar.increment();
+                                    }
+                                } else {
+                                    txHashes.push(cnt.result);
+                                    batchBar.increment();
+                                }
+                            }
+                        } catch (err: any) {
+                            // Handle network errors for the whole batch
+                            batchErrors.push(`Batch Error (worker #${workerId}): ${err.message}`);
+                            batchBar.increment(jobsToProcess.length);
                         }
-                    } catch (err: any) {
-                        batchBar.increment();
-                        let errorDetails = `Batch for worker #${workerId}: `;
-                        if (err.response) {
-                            errorDetails += `HTTP ${err.response.status
-                                } - ${err.response.statusText
-                                } - ${JSON.stringify(err.response.data)}`;
-                        } else if (err.request) {
-                            errorDetails +=
-                                'Network error - no response received';
-                        } else {
-                            errorDetails += `Request error: ${err.message}`;
+
+                        if (currentBatch.length > 0) {
+                            retries++;
+                            await new Promise(resolve => setTimeout(resolve, 1000 * (retries + 1))); // Exponential backoff
                         }
-                        batchErrors.push(errorDetails);
-                        // We don't break here, as one failed batch for a worker doesn't affect other batches for the same worker
-                        // because they contain txs from different accounts.
                     }
                 }
             };
