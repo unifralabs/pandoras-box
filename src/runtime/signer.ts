@@ -198,9 +198,13 @@ class Signer {
     ): Promise<string[][]> {
         const flatTransactions = transactions.flat();
         const cpuCores = os.cpus().length;
-        let workerCount = numWorkers || Math.max(1, Math.min(cpuCores, flatTransactions.length));
-        workerCount = workerCount / 2;
-        Logger.info(`\nSigning transactions using ${workerCount} CPU cores...`);
+        // Default to using half the CPU cores for signing to leave resources for I/O (e.g., sending transactions).
+        // Ensure at least one worker is used.
+        const defaultWorkerCount = Math.max(1, Math.floor(cpuCores / 2));
+        let workerCount = numWorkers || defaultWorkerCount;
+        // Ensure workerCount doesn't exceed the number of transactions or available cores.
+        workerCount = Math.max(1, Math.min(workerCount, cpuCores, flatTransactions.length));
+        Logger.info(`\nSigning transactions using ${workerCount} worker threads...`);
 
         const signBar = new SingleBar({
             barCompleteChar: '\u2588',

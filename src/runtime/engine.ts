@@ -62,17 +62,12 @@ class Engine {
         const rawTransactions: TransactionRequest[][] =
             await runtime.ConstructTransactions(accounts, ctx.numTxs);
 
-        // Sign the transactions (using multi-threaded version for better CPU utilization)
-        const signedTransactions = await signer.signTransactionsMultiThreaded(
-            accounts,
-            rawTransactions
-        );
-
         Logger.title(runtime.GetStartMessage());
 
         // Send the transactions in batches
         return Batcher.batchTransactions(
-            signedTransactions,
+            rawTransactions,
+            accounts,
             ctx.batchSize,
             ctx.url,
             ctx.concurrency,
