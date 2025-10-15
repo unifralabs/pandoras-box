@@ -1,75 +1,32 @@
 import BetterSqlite3 from "better-sqlite3";
 import cliProgress from "cli-progress";
 import Table from "cli-table3";
-import { Command } from 'commander';
+import { Command } from "commander";
 import { ethers } from "ethers";
 import process from "node:process";
 import { Subscriber } from "zeromq";
 import MoatABI from "../abi/moat";
+import { Block, Transaction } from "bitcoinjs-lib";
 import Logger from "../logger/logger";
-import crypto from "crypto";
 
-import { getBlockHashFromRawBlock } from "./blockhash";
 type DB = InstanceType<typeof BetterSqlite3>;
 const { utils, providers } = ethers as any;
 const Interface = (utils && utils.Interface) || (ethers as any).Interface;
-const parseEther = (ethers as any).utils?.parseEther || ((value: string) => {
-    // Convert "0.1" to "100000000000000000" (0.1 ETH in wei)
-    const parts = value.split('.');
-    if (parts.length === 1) {
-        return BigInt(value + '000000000000000000');
-    } else {
-        const whole = parts[0];
-        const decimal = parts[1].padEnd(18, '0').substring(0, 18);
-        return BigInt(whole + decimal);
-    }
-});
+const parseEther =
+    (ethers as any).utils?.parseEther ||
+    ((value: string) => {
+        // Convert "0.1" to "100000000000000000" (0.1 ETH in wei)
+        const parts = value.split(".");
+        if (parts.length === 1) {
+            return BigInt(value + "000000000000000000");
+        } else {
+            const whole = parts[0];
+            const decimal = parts[1].padEnd(18, "0").substring(0, 18);
+            return BigInt(whole + decimal);
+        }
+    });
 
 type TransactionRequest = any;
-
-/** Decode Bitcoin-style VarInt. Returns [value, newOffset] */
-function readVarInt(buf: Buffer, offset: number): [number, number] {
-    const first = buf[offset];
-    if (first < 0xfd) return [first, offset + 1];
-    if (first === 0xfd) return [buf.readUInt16LE(offset + 1), offset + 3];
-    if (first === 0xfe) return [buf.readUInt32LE(offset + 1), offset + 5];
-    // first === 0xff
-    const lo = buf.readUInt32LE(offset + 1);
-    const hi = buf.readUInt32LE(offset + 5);
-    return [hi * 0x100000000 + lo, offset + 9];
-}
-
-function extractHeightFromBlock(block: Buffer): number | null {
-    let offset = 80; // skip header
-    // tx count
-    const [txCount, off1] = readVarInt(block, offset);
-    if (txCount === 0) return null;
-    offset = off1;
-    // Parse first (coinbase) tx
-    // version
-    offset += 4;
-    // input count
-    const [vinCnt, off2] = readVarInt(block, offset);
-    offset = off2;
-    if (vinCnt === 0) return null;
-    // prev txid + vout
-    offset += 32 + 4;
-    // script length
-    const [scriptLen, off3] = readVarInt(block, offset);
-    offset = off3;
-    const scriptStart = offset;
-    const script = block.subarray(scriptStart, scriptStart + scriptLen);
-    if (script.length === 0) return null;
-    const pushLen = script[0];
-    if (pushLen === 0 || pushLen + 1 > script.length) return null;
-    const heightBytes = script.subarray(1, 1 + pushLen);
-    // little-endian to int
-    let height = 0;
-    for (let i = heightBytes.length - 1; i >= 0; i--) {
-        height = (height << 8) | heightBytes[i];
-    }
-    return height;
-}
 
 interface VoutInfo {
     value: bigint;
@@ -93,72 +50,6 @@ function isP2PKH(script: Buffer): boolean {
         script[23] === 0x88 && // OP_EQUALVERIFY
         script[24] === 0xac // OP_CHECKSIG
     );
-}
-
-function parseDogeCoinTransactions(block: Buffer): ParsedTx[] {
-    const txs: ParsedTx[] = [];
-    let offset = 80; // header
-    const [txCount, off1] = readVarInt(block, offset);
-    offset = off1;
-
-    for (let i = 0; i < txCount; i++) {
-        const txStart = offset;
-
-        // version
-        offset += 4;
-
-        // Dogecoin currently has no segwit, so directly read vin count
-        const [vinCnt, offVinCnt] = readVarInt(block, offset);
-        offset = offVinCnt;
-        for (let vi = 0; vi < vinCnt; vi++) {
-            // prev hash + index
-            offset += 32 + 4;
-            // script len
-            const [scriptLen, offSL] = readVarInt(block, offset);
-            offset = offSL + scriptLen;
-            // sequence
-            offset += 4;
-        }
-
-        // vout count
-        const [voutCnt, offVoutCnt] = readVarInt(block, offset);
-        offset = offVoutCnt;
-        const vouts: VoutInfo[] = [];
-
-        for (let vo = 0; vo < voutCnt; vo++) {
-            // value (8) little-endian satoshis
-            const valueLE = block.readBigUInt64LE(offset);
-            offset += 8;
-            const [pkLen, offPK] = readVarInt(block, offset);
-            offset = offPK;
-            const script = block.subarray(offset, offset + pkLen);
-            offset += pkLen;
-            const p2pkh = isP2PKH(script);
-            const addrHash = p2pkh ? script.subarray(3, 23).toString("hex") : "";
-
-            vouts.push({
-                value: valueLE,
-                scriptHex: script.toString("hex"),
-                isP2PKH: p2pkh,
-                addrHash: addrHash,
-                uid: valueLE,
-            });
-        }
-
-        // locktime
-        offset += 4;
-
-        const txEnd = offset;
-        const txBuf = block.subarray(txStart, txEnd);
-        const txHash = crypto
-            .createHash("sha256")
-            .update(crypto.createHash("sha256").update(txBuf).digest())
-            .digest()
-            .reverse()
-            .toString("hex");
-        txs.push({ hash: txHash, vouts });
-    }
-    return txs;
 }
 
 /**
@@ -216,6 +107,9 @@ export function createTxDatabase(dbPath:string): DB {
 export async function startL1Listener(
     db: DB,
     zmqEndpoint: string,
+    rpcUrl: string,
+    rpcUser: string,
+    rpcPass: string,
     targetAddrHash: string = "",
     bars?: cliProgress.MultiBar
 ) {
@@ -235,9 +129,54 @@ export async function startL1Listener(
         for (const row of txRows) updateTxStmt.run(row);
     });
 
+    const processBlock = (blockJson: any) => {
+        const height = blockJson.height;
+        if (!height) {
+            Logger.warn(`[l1-listener] Block JSON is missing height. Skipping.`);
+            return;
+        }
+
+        const blockHash = blockJson.hash;
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const nowMs = Date.now();
+        const headerRow = {
+            height,
+            hash: blockHash,
+            version: blockJson.version,
+            prev_hash: blockJson.previousblockhash,
+            merkle_root: blockJson.merkleroot,
+            timestamp: blockJson.time,
+            create_at: nowMs,
+            bits: parseInt(blockJson.bits, 16),
+            nonce: blockJson.nonce,
+            size_bytes: blockJson.size,
+        };
+
+        const rowsToUpdate: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[] = [];
+        const transactions = blockJson.tx || [];
+
+        for (const tx of transactions) {
+            const txHash = tx.txid;
+            for (const vout of tx.vout) {
+                const valueInSatoshis = BigInt(Math.round(vout.value * 1e8));
+                const scriptPubKey = vout.scriptPubKey;
+                if (!scriptPubKey || !scriptPubKey.hex) continue;
+                const scriptBuffer = Buffer.from(scriptPubKey.hex, 'hex');
+                const p2pkh = isP2PKH(scriptBuffer);
+                const addrHash = p2pkh ? scriptBuffer.subarray(3, 23).toString("hex") : "";
+
+                if (addrHash === targetAddrHash) {
+                    rowsToUpdate.push({ uid: Number(valueInSatoshis), l1_txhash: txHash, l1_height: height, l1_timestamp: nowSec });
+                }
+            }
+        }
+        insertBlockData(headerRow, rowsToUpdate);
+    };
+
     const sock = new Subscriber();
     sock.connect(zmqEndpoint);
-    sock.subscribe("rawblock");
+    sock.subscribe("hashblock"); // Subscribe to block hashes instead of raw blocks
 
     Logger.debug(`[doge-zmq] Subscribed to rawblock on ${zmqEndpoint}`);
 
@@ -277,68 +216,21 @@ export async function startL1Listener(
         (progressBar as cliProgress.SingleBar).start(totalCount.count, initialCompleted, { blockHeight: "N/A" });
     }
 
-    for await (const [_topic, message] of sock) {
-        Logger.debug(`[doge-zmq] Received rawblock message (${message.length} bytes)`);
-        if (message.length < 80) {
-            Logger.warn(`[doge-zmq] Received short rawblock message (${message.length} bytes), expected >= 80. Skipping.`);
-            continue;
-        }
+    for await (const [_topic, msg] of sock) {
+        const blockHash = msg.toString('hex');
+        Logger.debug(`[doge-zmq] Received block hash: ${blockHash}`);
 
-        const blockHash = getBlockHashFromRawBlock(message);
-        const height = extractHeightFromBlock(message);
+        try {
+            const blockJson = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblock', [blockHash, 2]);
+            processBlock(blockJson);
 
-        const heightInfo = height !== null ? `height=${height}` : "height=unknown";
+            const completedCount = (completedCountStmt.get() as {count: number}).count;
+            progressBar.update(completedCount, { blockHeight: blockJson.height });
 
-        const parsedTxs = parseDogeCoinTransactions(message);
-        const txHashes = parsedTxs.map((t) => t.hash);
+            Logger.info(
+                `[l1-zmq] Block processed: ${blockHash} height=${blockJson.height} (txs=${blockJson.tx.length}) (size: ${blockJson.size} bytes)`
+            );
 
-        if (height !== null) {
-            const version = message.readInt32LE(0);
-            const prevHash = Buffer.from(message.subarray(4, 36)).reverse().toString("hex");
-            const merkleRoot = Buffer.from(message.subarray(36, 68)).reverse().toString("hex");
-            const timestamp = message.readUInt32LE(68);
-            const bits = message.readUInt32LE(72);
-            const nonce = message.readUInt32LE(76);
-
-            const nowSec = Math.floor(Date.now() / 1000);
-            const nowMs = Date.now();
-            const headerRow = {
-                height,
-                hash: blockHash,
-                version,
-                prev_hash: prevHash,
-                merkle_root: merkleRoot,
-                timestamp,
-                create_at: nowMs,
-                bits,
-                nonce,
-                size_bytes: message.length,
-            };
-
-            const rowsToUpdate: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[] = [];
-            for (const ptx of parsedTxs) {
-                for (const vout of ptx.vouts) {
-                    Logger.debug(`[doge-zmq] vout.addrHash: ${vout.addrHash}, targetAddrHash: ${targetAddrHash},vout.uid: ${vout.uid}`);
-                    if (vout.addrHash === targetAddrHash) {
-                        rowsToUpdate.push({
-                            uid: Number(vout.uid),
-                            l1_txhash: ptx.hash,
-                            l1_height: height,
-                            l1_timestamp: nowSec,
-                        });
-                    }
-                }
-            }
-            insertBlockData(headerRow, rowsToUpdate);
-
-            const completedCount = (completedCountStmt.get() as { count: number }).count;
-            progressBar.update(completedCount, { blockHeight: height });
-
-            if (rowsToUpdate.length > 0) {
-                Logger.debug(`[l1] updated ${rowsToUpdate.length} transactions, progress: ${completedCount}/${totalCount.count}`);
-            }
-
-            // After inserting/updating, check again if all transactions now have L1 info.
             remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
             if (remainingL1 === 0) {
                 progressBar.stop();
@@ -350,10 +242,227 @@ export async function startL1Listener(
                 }
                 break; // exit the for-await loop
             }
+        } catch (e) {
+            Logger.error(`[l1-zmq] Error processing block ${blockHash}: ${e instanceof Error ? e.stack || e.message : String(e)}`);
         }
-        Logger.debug(
-            `[doge-zmq] New block processed: ${blockHash} ${heightInfo} (txs=${txHashes.length}) (size: ${message.length} bytes)`
+    }
+}
+
+async function dogeRpc(url: string, user: string, pass: string, method: string, params: any[]): Promise<any> {
+    const { URL } = require('url');
+    const rpcUrl = new URL(url);
+    const options = {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + Buffer.from(user + ':' + pass).toString('base64')
+        },
+    };
+    const http = rpcUrl.protocol === 'https:' ? require('https') : require('http');
+
+    return new Promise((resolve, reject) => {
+        const req = http.request(rpcUrl, options, (res: any) => {
+            let data = '';
+            res.on('data', (chunk: any) => {
+                data += chunk;
+            });
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.error) {
+                        reject(new Error(`RPC Error: ${JSON.stringify(json.error)}`));
+                    } else {
+                        resolve(json.result);
+                    }
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        });
+
+        req.on('error', (e: any) => {
+            reject(e);
+        });
+
+        req.write(JSON.stringify({
+            jsonrpc: '1.0',
+            id: 'gemini-l1-listener',
+            method: method,
+            params: params
+        }));
+        req.end();
+    });
+}
+
+
+export async function startL1ListenerRpc(
+    db: DB,
+    rpcUrl: string,
+    rpcUser: string,
+    rpcPass: string,
+    targetAddrHash: string = "",
+    bars?: cliProgress.MultiBar,
+    startHeight?: number
+) {
+    Logger.debug(`[l1-listener-rpc] startL1ListenerRpc rpcUrl: ${rpcUrl}, targetAddrHash: ${targetAddrHash}`);
+
+    const insertStmt = db.prepare(
+        `INSERT OR IGNORE INTO l1_headers (height, hash, version, prev_hash, merkle_root, timestamp, create_at, bits, nonce, size_bytes)
+         VALUES (@height, @hash, @version, @prev_hash, @merkle_root, @timestamp, @create_at, @bits, @nonce, @size_bytes)`
+    );
+
+    const updateTxStmt = db.prepare(
+        `UPDATE txs SET l1_txhash=@l1_txhash, l1_height=@l1_height, l1_timestamp=@l1_timestamp WHERE uid=@uid`
+    );
+
+    const insertBlockData = db.transaction((header: any, txRows: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[]) => {
+        insertStmt.run(header);
+        for (const row of txRows) updateTxStmt.run(row);
+    });
+
+    const remainingL1Stmt = db.prepare(
+        `SELECT COUNT(*) as cnt FROM txs WHERE l1_txhash IS NULL`
+    );
+
+    let remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
+    if (remainingL1 === 0) {
+        Logger.info('[l1-listener-rpc] All transactions already have L1 info. Listener will not start.');
+        return;
+    }
+
+    const totalCount = db.prepare(`SELECT COUNT(*) as count FROM txs`).get() as { count: number };
+    const completedCountStmt = db.prepare(`SELECT COUNT(*) as count FROM txs WHERE l1_txhash IS NOT NULL`);
+    const initialCompleted = (completedCountStmt.get() as { count: number }).count;
+
+    Logger.info(`[l1-listener-rpc] Starting with ${totalCount.count} total transactions to track for L1 info.`);
+
+    const l1BarOptions = {
+        format: '[L1-RPC] Block {blockHeight} |{bar}| {percentage}% | {value}/{total} tx | Elapsed: {duration_formatted}',
+        barCompleteChar: '█',
+        barIncompleteChar: '░',
+        hideCursor: true,
+        stopOnComplete: false,
+        clearOnComplete: false,
+        stream: process.stderr,
+        linewrap: true,
+        noTTYOutput: true
+    } as const;
+
+    const progressBar = bars
+        ? bars.create(totalCount.count, initialCompleted, { blockHeight: "N/A" }, l1BarOptions as any)
+        : new cliProgress.SingleBar(l1BarOptions as any);
+    if (!(bars)) {
+        (progressBar as cliProgress.SingleBar).start(totalCount.count, initialCompleted, { blockHeight: "N/A" });
+    }
+
+    const processBlock = (blockJson: any) => {
+        const height = blockJson.height;
+        if (!height) {
+            Logger.warn(`[l1-listener-rpc] Block JSON is missing height. Skipping.`);
+            return;
+        }
+
+        // The block hash from the RPC response is the correct one, even for AuxPoW blocks.
+        const blockHash = blockJson.hash;
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const nowMs = Date.now();
+        const headerRow = {
+            height,
+            hash: blockHash,
+            version: blockJson.version,
+            prev_hash: blockJson.previousblockhash,
+            merkle_root: blockJson.merkleroot,
+            timestamp: blockJson.time,
+            create_at: nowMs,
+            bits: parseInt(blockJson.bits, 16), // bits is a hex string
+            nonce: blockJson.nonce,
+            size_bytes: blockJson.size,
+        };
+
+        const rowsToUpdate: { uid: number; l1_txhash: string; l1_height: number; l1_timestamp: number }[] = [];
+        const transactions = blockJson.tx || [];
+        Logger.info(`===============\n${JSON.stringify(transactions)}`)
+
+        for (const tx of transactions) {
+            const txHash = tx.txid;
+            for (const vout of tx.vout) {
+                // vout.value is in DOGE (float), convert to satoshis (integer)
+                const valueInSatoshis = BigInt(Math.round(vout.value * 1e8));
+
+                const scriptPubKey = vout.scriptPubKey;
+                if (!scriptPubKey || !scriptPubKey.hex) continue;
+
+                if (scriptPubKey.hex.toLowerCase().substring(6,46) === targetAddrHash) {
+                    rowsToUpdate.push({
+                        uid: Number(valueInSatoshis), // Assuming uid is the value in satoshis
+                        l1_txhash: txHash,
+                        l1_height: height,
+                        l1_timestamp: blockJson.time,
+                    });
+                }
+            }
+        }
+        insertBlockData(headerRow, rowsToUpdate);
+
+        const completedCount = (completedCountStmt.get() as { count: number }).count;
+        progressBar.update(completedCount, { blockHeight: height });
+
+        if (rowsToUpdate.length > 0) {
+            Logger.info(`[l1-rpc] updated ${rowsToUpdate.length} transactions, progress: ${completedCount}/${totalCount.count}`);
+        }
+        
+        Logger.info(
+            `[l1-rpc] Block processed: ${blockHash} height=${height} (txs=${transactions.length}) (size: ${blockJson.size} bytes)`
         );
+    };
+
+    let currentHeight: number;
+    if (startHeight && startHeight > 0) {
+        currentHeight = startHeight;
+        Logger.info(`[l1-listener-rpc] Starting scan from specified height ${currentHeight}`);
+    } else {
+        const latestHeaderStmt = db.prepare(`SELECT MAX(height) as height FROM l1_headers`);
+        const latestHeader = latestHeaderStmt.get() as { height: number | null };
+        
+        currentHeight = (latestHeader.height ?? 0);
+        if (currentHeight > 0) {
+            currentHeight++;
+            Logger.info(`[l1-listener-rpc] Resuming scan from block ${currentHeight}`);
+        } else {
+            currentHeight = 1;
+            Logger.info(`[l1-listener-rpc] Starting scan from block 1 (no previous data or start height specified)`);
+        }
+    }
+    
+
+    while (true) {
+        try {
+            const latestBlockCount = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblockcount', []);
+            
+            while (currentHeight <= latestBlockCount) {
+                const blockHash = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblockhash', [currentHeight]);
+                // Use verbosity 2 to get a detailed JSON object with parsed transactions
+                const blockJson = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblock', [blockHash, 2]);
+                
+                processBlock(blockJson);
+
+                remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
+                if (remainingL1 === 0) {
+                    progressBar.stop();
+                    Logger.info('[l1-listener-rpc] All transactions have obtained L1 info. Stopping listener.');
+                    return;
+                }
+                
+                currentHeight++;
+            }
+
+        } catch (e) {
+            Logger.error(`[l1-listener-rpc] Error during block processing loop: ${e instanceof Error ? e.stack || e.message : String(e)}`);
+        }
+        
+        // Wait for a bit before polling for new blocks
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
     }
 }
 
@@ -551,23 +660,26 @@ export async function startL2Listener(
 // Unified entry
 export function startCrossChainListeners(opts: {
     l1TargetHash: string;          // 20-byte hex without 0x
-    zmqEndpoint: string;
+    l1ListenMode: 'zmq' | 'rpc';
+    zmqEndpoint?: string;
+    l1RpcUrl?: string;
+    l1RpcUser?: string;
+    l1RpcPass?: string;
+    l1StartHeight?: number;
     l2Rpc: string;
     moatAddress: string;
     dbPath?: string;
     transactions: TransactionRequest[]
 }): Promise<void> {
-    const { l1TargetHash, zmqEndpoint, l2Rpc, moatAddress } = opts;
+    const { l1TargetHash, l1ListenMode, zmqEndpoint, l1RpcUrl, l1RpcUser, l1RpcPass, l1StartHeight, l2Rpc, moatAddress } = opts;
     const db = createTxDatabase(opts.dbPath ?? "withdrawal.db");
     // db.prepare(`DELETE FROM txs`).run();
 
     for (const tx of opts.transactions) {
         if (!tx.value) continue;
         const uid: bigint = (BigInt(tx.value.toString()) - BigInt(parseEther("0.1").toString())) / BigInt(1e10);
-        db.prepare(`INSERT INTO txs (uid) VALUES (@uid)`).run({ uid });
+        db.prepare(`INSERT OR IGNORE INTO txs (uid) VALUES (@uid)`).run({ uid });
     }
-
-    const endpoint = zmqEndpoint;
 
     // Shared MultiBar to prevent bars overwriting each other
     const bars = new cliProgress.MultiBar({
@@ -579,10 +691,24 @@ export function startCrossChainListeners(opts: {
         format: '{bar} {percentage}% | {value}/{total}'
     }, cliProgress.Presets.shades_grey);
 
-    const l1Promise = startL1Listener(db, endpoint, l1TargetHash, bars).catch((e) => {
-        Logger.error(`L1 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
-        throw e;
-    });
+    let l1Promise: Promise<void>;
+    if (l1ListenMode === 'rpc') {
+        if (!l1RpcUrl || !l1RpcUser || !l1RpcPass) {
+            throw new Error('L1 RPC URL, user, and password are required for rpc mode.');
+        }
+        l1Promise = startL1ListenerRpc(db, l1RpcUrl, l1RpcUser, l1RpcPass, l1TargetHash, bars, l1StartHeight).catch(e => {
+            Logger.error(`L1 (RPC) listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+            throw e;
+        });
+    } else { // default to zmq
+        if (!zmqEndpoint || !l1RpcUrl || !l1RpcUser || !l1RpcPass) {
+            throw new Error('ZMQ endpoint and L1 RPC credentials are required for zmq mode.');
+        }
+        l1Promise = startL1Listener(db, zmqEndpoint, l1RpcUrl, l1RpcUser, l1RpcPass, l1TargetHash, bars).catch(e => {
+            Logger.error(`L1 (ZMQ) listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
+            throw e;
+        });
+    }
     const l2Promise = startL2Listener(db, l2Rpc, moatAddress, bars).catch((e) => {
         Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         throw e;
@@ -754,7 +880,12 @@ if (require.main === module) {
     const program = new Command();
     program
         .option('--l1-target-hash <hash>', '20-byte hex L1 target address hash', "bc7656b9d24943793cbdd73fe392aca6ba7a9c3a")
-        .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint', "tcp://10.8.0.25:30495")
+        .option('--l1-listen-mode <mode>', 'L1 listener mode: zmq or rpc', 'rpc')
+        .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint (for zmq mode)', "tcp://10.8.0.25:30495")
+        .option('--l1-rpc-url <url>', 'Dogecoin RPC URL (for rpc mode)', 'http://127.0.0.1:22555')
+        .option('--l1-rpc-user <user>', 'Dogecoin RPC username (for rpc mode)', 'dogecoin')
+        .option('--l1-rpc-pass <pass>', 'Dogecoin RPC password (for rpc mode)', 'dogecoin')
+        .option('--l1-start-height <height>', 'Specify L1 block height to start scanning from (for rpc mode)', (val) => parseInt(val, 10))
         .option('--l2-rpc <url>', 'L2 RPC endpoint', "https://rpc.dg.unifra.xyz")
         .option('--moat-address <address>', 'Moat contract address', "0x3eD6eD3c572537d668F860d4d556B8E8BF23E1E2")
         .option('--db-path <path>', 'Path to SQLite database file', "withdrawal.db")
@@ -765,7 +896,12 @@ if (require.main === module) {
     (async () => {
         await startCrossChainListeners({
             l1TargetHash: options.l1TargetHash,
+            l1ListenMode: options.l1ListenMode,
             zmqEndpoint: options.zmqEndpoint,
+            l1RpcUrl: options.l1RpcUrl,
+            l1RpcUser: options.l1RpcUser,
+            l1RpcPass: options.l1RpcPass,
+            l1StartHeight: options.l1StartHeight,
             l2Rpc: options.l2Rpc,
             moatAddress: options.moatAddress,
             dbPath: options.dbPath,

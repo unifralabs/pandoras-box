@@ -27,14 +27,20 @@ class WithdrawalRuntime {
     moatContractAddress: string;
     targetAddress: string;
     zmqEndpoint: string;
+    l1RpcUrl?: string;
+    l1RpcUser?: string;
+    l1RpcPass?: string;
 
     constructor(
         mnemonic: string,
         url: string,
         moatContractAddress: string,
         targetAddress: string,
-        fixedGasPrice: BigNumber | null = null,
-        zmqEndpoint: string
+        zmqEndpoint: string,
+        l1RpcUrl: string,
+        l1RpcUser?: string,
+        l1RpcPass?: string,
+        fixedGasPrice: BigNumber | null = null
     ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
@@ -43,6 +49,9 @@ class WithdrawalRuntime {
         this.targetAddress = targetAddress;
         this.fixedGasPrice = fixedGasPrice;
         this.zmqEndpoint = zmqEndpoint;
+        this.l1RpcUrl = l1RpcUrl;
+        this.l1RpcUser = l1RpcUser;
+        this.l1RpcPass = l1RpcPass;
     }
 
     private static listenerStarted = false;
@@ -180,10 +189,14 @@ class WithdrawalRuntime {
                 const decoded = bs58check.decode(this.targetAddress);
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
                 startCrossChainListeners({
+                    l1ListenMode: 'rpc',
                     l1TargetHash: hash20,
                     zmqEndpoint: this.zmqEndpoint,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
+                    l1RpcUrl: this.l1RpcUrl,
+                    l1RpcUser: this.l1RpcUser,
+                    l1RpcPass: this.l1RpcPass,
                     transactions: transactions.flat()
                 });
 

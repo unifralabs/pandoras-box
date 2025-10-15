@@ -88,6 +88,18 @@ async function run() {
             'Dogecoin ZMQ endpoint for L1 listener (e.g., tcp://127.0.0.1:28332)'
         )
         .option(
+            '--l1-rpc-url <url>',
+            'L1 RPC URL for DEPOSIT or WITHDRAWAL mode'
+        )
+        .option(
+            '--l1-rpc-user <user>',
+            'L1 RPC username for DEPOSIT or WITHDRAWAL mode'
+        )
+        .option(
+            '--l1-rpc-pass <pass>',
+            'L1 RPC password for DEPOSIT or WITHDRAWAL mode'
+        )
+        .option(
             '-o, --output <output-path>',
             'The output path for the results JSON'
         )
@@ -103,10 +115,6 @@ async function run() {
         .option(
             '--tps <tps>',
             'Target transactions per second (TPS) across all workers'
-        )
-        .option(
-            '--l1-rpc-url <url>',
-            'L1 RPC URL for DEPOSIT mode'
         )
         .option(
             '--db-url <url>',
@@ -150,6 +158,8 @@ async function run() {
     const targetAddress = options.targetAddress || '0x000000000000000000000000000000000000dead';
     const dogeZmqEndpoint: string = options.dogeZmqEndpoint;
     // DEPOSIT mode options
+    const l1RpcUser = options.l1RpcUser;
+    const l1RpcPass = options.l1RpcPass;
     const l1RpcUrl = options.l1RpcUrl;
     const dbUrl = options.dbUrl;
     const network = options.network;
@@ -240,8 +250,11 @@ async function run() {
                 url,
                 moatAddress,
                 targetAddress,
-                fixedGasPrice,
-                dogeZmqEndpoint
+                dogeZmqEndpoint,
+                l1RpcUrl,
+                l1RpcUser,
+                l1RpcPass,
+                fixedGasPrice
             );
             break;
         default:
