@@ -64,9 +64,20 @@ class Engine {
 
         Logger.title(runtime.GetStartMessage());
 
-        // Send the transactions in batches
-        return Batcher.batchTransactions(
+        // 1. Sign all transactions in parallel using multiple CPU cores.
+        // This is a CPU-bound task, so we offload it from the main event loop.
+        const signedTxsByAccount: string[][] = await signer.signTransactionsMultiThreaded(
+            accounts,
             rawTransactions,
+            // You can optionally specify the number of workers, otherwise it defaults to half of the CPU cores.
+            // For maximum signing throughput, you might want to set it close to your core count.
+            // os.cpus().length 
+        );
+
+        // 2. Send the pre-signed transactions. 
+        // This part is I/O-bound (network requests), so it benefits from the async/await concurrency model.
+        return Batcher.batchSignedTransactions(
+            signedTxsByAccount,
             accounts,
             ctx.batchSize,
             ctx.url,

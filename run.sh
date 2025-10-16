@@ -3,10 +3,10 @@
 yarn install
 yarn build
 rm -rf out/pandoras-box.log
-transactions=6000
-batch=600
-subaccounts=500
-concurrency=100
+transactions=20000
+batch=1600
+subaccounts=1000
+concurrency=50
 
 DEPOSIT_COUNT=2000
 
@@ -15,7 +15,7 @@ MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary bette
 #0xd98f41da0f5b229729ed7bf469ea55d98d11f467
 
 TARGET_ENV=${1:-"dogeos"} # Default to "dogeos", or take from the first script argument.
-echo "[info] Using target environment: $TARGET_ENV"
+echo "[INFO] Using target environment: $TARGET_ENV"
 
 if [ "$TARGET_ENV" == "dogeos" ]; then
     ###################################
@@ -23,7 +23,9 @@ if [ "$TARGET_ENV" == "dogeos" ]; then
     L1_RPC_URL="http://localhost:44555"
     L1_RPC_USER="fBJhRsMr"
     L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
-    RPC="http://10.142.0.16:8545"
+    #RPC="http://10.142.0.16:8545"
+    RPC="https://rpc.testnet.dogeos.com"
+    #RPC="https://dogeos-testnet-public.unifra.io"
     export L1_CONFIRMATIONS=120
     export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
     MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
@@ -42,6 +44,8 @@ elif [ "$TARGET_ENV" == "unifra" ]; then
     WITHDRAWAL_TARGET="njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF"
     ###################################
 fi
+
+echo "[INFO] RPC Endpoint: $RPC"
 
 out=latest
 mkdir -p ${out}
@@ -138,9 +142,8 @@ runDeposit() {
     npx ts-node src/runtime/deposit.ts
 }
 
-#getPending
-clearPending
-sleep 3
+
+# clearPending
 
 #runDeposit
 #runWithDrawal

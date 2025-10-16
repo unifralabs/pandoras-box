@@ -263,6 +263,7 @@ class StatCollector {
         batchSize: number,
         provider: Provider,
         startBlock: number,
+        blocks: Map<number, BlockInfo>
     ): Promise<txStats[]> {
         let succeededTransactions: txStats[] = [];
 
@@ -311,6 +312,25 @@ class StatCollector {
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     continue;
                 } else {
+                    // Calculate TPS for the current block
+                    let tps = 0;
+                    const prevBlockInfo = blocks.get(blockNumber - 1);
+                    if (prevBlockInfo) {
+                        const timeDiff = block.timestamp - prevBlockInfo.createdAt;
+                        if (timeDiff > 0) {
+                            tps = Number((block.transactions.length / timeDiff).toFixed(2));
+                        }
+                    }
+
+                    // Create a new BlockInfo object and add it to the map
+                    blocks.set(blockNumber, new BlockInfo(
+                        block.number,
+                        block.timestamp,
+                        block.transactions.length,
+                        block.gasUsed,
+                        block.gasLimit,
+                        tps
+                    ));
                     waitStartTime = 0;
                     scanBar.update({ scannedBlocks: blockNumber });
                     blockNumber++;
@@ -443,17 +463,16 @@ class StatCollector {
         return new txBatchResult(succeeded, remaining, batchErrors);
     }
 
+    /**
+     * Fetches block information in parallel with batching to improve performance on slow networks.
+     * @param stats Array of transaction statistics containing block numbers.
+     * @param provider The Ethereum provider.
+     * @returns A map of block numbers to BlockInfo objects.
+     */
     async fetchBlockInfo(
         stats: txStats[],
         provider: Provider
     ): Promise<Map<number, BlockInfo>> {
-        const blockSet: Set<number> = new Set<number>();
-        for (const s of stats) {
-            blockSet.add(s.block);
-        }
-
-        const blockFetchErrors: Error[] = [];
-
         Logger.info('\nGathering block info...');
         const blocksBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -462,55 +481,73 @@ class StatCollector {
             format: 'Gathering blocks [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} blocks',
         });
 
-        blocksBar.start(blockSet.size, 0, {
-            speed: 'N/A',
-        });
-
-        const blocksMap: Map<number, BlockInfo> = new Map<number, BlockInfo>();
-        const sortedBlocks = Array.from(blockSet).sort((a, b) => a - b);
-
-        // Fetch blocks and calculate TPS
-        for (let i = 0; i < sortedBlocks.length; i++) {
-            const block = sortedBlocks[i];
-            try {
-                const fetchedInfo = await provider.getBlock(block);
-                let tps = 0;
-
-                // Calculate TPS for this block
-                if (i > 0) {
-                    // Get the previous block for time difference calculation
-                    const prevBlock = sortedBlocks[i - 1];
-                    const prevBlockInfo = await provider.getBlock(prevBlock);
-                    const timeDiff = fetchedInfo.timestamp - prevBlockInfo.timestamp;
-
-                    // Calculate TPS (transactions per second)
-                    if (timeDiff > 0) {
-                        tps = Number((fetchedInfo.transactions.length / timeDiff).toFixed(2));
-                    }
-                }
-
-                blocksBar.increment();
-
-                blocksMap.set(
-                    block,
-                    new BlockInfo(
-                        block,
-                        fetchedInfo.timestamp,
-                        fetchedInfo.transactions.length,
-                        fetchedInfo.gasUsed,
-                        fetchedInfo.gasLimit,
-                        tps
-                    )
-                );
-            } catch (e: any) {
-                blockFetchErrors.push(e);
+        // 1. Collect all unique block numbers we need to fetch.
+        // This includes the block itself and the previous block for TPS calculation.
+        const uniqueBlockNumbers = new Set<number>();
+        for (const s of stats) {
+            if (s.block > 0) {
+                uniqueBlockNumbers.add(s.block);
             }
         }
 
+        const sortedUniqueBlocks = Array.from(uniqueBlockNumbers).sort((a, b) => a - b);
+        const allBlockNumbersToFetch = new Set<number>(sortedUniqueBlocks);
+        if (sortedUniqueBlocks.length > 0) {
+            // Also fetch the block before the first one for TPS calculation of the first block in our list.
+            allBlockNumbersToFetch.add(sortedUniqueBlocks[0] - 1);
+        }
+
+        blocksBar.start(allBlockNumbersToFetch.size, 0, { speed: 'N/A' });
+
+        // 2. Fetch all required blocks in parallel, with batching.
+        const BATCH_SIZE = 50; // Number of parallel requests per batch
+        const blockNumbersArray = Array.from(allBlockNumbersToFetch);
+        const fetchedBlocks = new Map<number, any>();
+        const blockFetchErrors: Error[] = [];
+
+        for (let i = 0; i < blockNumbersArray.length; i += BATCH_SIZE) {
+            const batch = blockNumbersArray.slice(i, i + BATCH_SIZE);
+            const promises = batch.map(blockNum =>
+                provider.getBlock(blockNum).catch(e => {
+                    blockFetchErrors.push(new Error(`Failed to fetch block ${blockNum}: ${e.message}`));
+                    return null; // Return null on error to not break Promise.all
+                })
+            );
+
+            const results = await Promise.all(promises);
+
+            results.forEach((blockInfo, index) => {
+                if (blockInfo) {
+                    fetchedBlocks.set(batch[index], blockInfo);
+                }
+                blocksBar.increment();
+            });
+        }
         blocksBar.stop();
 
-        Logger.success('Gathered block info');
+        // 3. Now that we have all blocks, calculate TPS and create BlockInfo objects.
+        const blocksMap = new Map<number, BlockInfo>();
+        for (const blockNum of sortedUniqueBlocks) {
+            const fetchedInfo = fetchedBlocks.get(blockNum);
+            if (!fetchedInfo) continue;
 
+            let tps = 0;
+            const prevBlockInfo = fetchedBlocks.get(blockNum - 1);
+
+            if (prevBlockInfo) {
+                const timeDiff = fetchedInfo.timestamp - prevBlockInfo.timestamp;
+                if (timeDiff > 0) {
+                    tps = Number((fetchedInfo.transactions.length / timeDiff).toFixed(2));
+                }
+            }
+
+            blocksMap.set(blockNum, new BlockInfo(
+                blockNum, fetchedInfo.timestamp, fetchedInfo.transactions.length,
+                fetchedInfo.gasUsed, fetchedInfo.gasLimit, tps
+            ));
+        }
+
+        Logger.success('Gathered block info');
         if (blockFetchErrors.length > 0) {
             Logger.warn('Errors encountered during block info fetch:');
 
@@ -672,7 +709,7 @@ class StatCollector {
         }
 
         const totalTime = (endTime > startTime) ? (endTime - startTime) : 0;
-        const avgBlockTime = (includedBlockCount > 1 && totalTime > 0) ? (totalTime / (includedBlockCount -1)).toFixed(2) : 'N/A';
+        const avgBlockTime = (includedBlockCount > 1 && totalTime > 0) ? (totalTime / (includedBlockCount - 1)).toFixed(2) : 'N/A';
 
         const finalDataTable = new Table({
             head: ['Metric', 'Value'],
@@ -713,16 +750,31 @@ class StatCollector {
 
         const provider = new JsonRpcProvider(url);
 
-        // Fetch receipts
+        let blockInfoMapAll = new Map<number, BlockInfo>();
+
+        // Gather transaction receipts
         const txStats = await this.gatherTransactionReceipts(
             txHashes,
             batchSize,
             provider,
-            startBlock
+            startBlock,
+            blockInfoMapAll
         );
 
         // Fetch block info
-        const blockInfoMap = await this.fetchBlockInfo(txStats, provider);
+        //const blockInfoMap = await this.fetchBlockInfo(txStats, provider);
+
+        let blockInfoMap = new Map<number, BlockInfo>();
+        for (const tx of txStats) {
+            const blockInfo = blockInfoMapAll.get(tx.block);
+            if (blockInfo) {
+                blockInfoMap.set(tx.block, blockInfo);
+            }
+        }
+
+        blockInfoMap.delete(Math.min(...blockInfoMap.keys()));
+        blockInfoMap.delete(Math.max(...blockInfoMap.keys()));
+
 
         // Print the block utilization data
         this.printBlockData(blockInfoMap);
