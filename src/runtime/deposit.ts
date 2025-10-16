@@ -71,7 +71,7 @@ class DepositRuntime {
     private l1MasterAddress: string = '';
     private l1AgentAddress: string = '';
     private depositTargetAddress: string = '';
-    private blockBookUrl = "https://blockbook.qiaoxiaorui.org/api/";
+    private blockBookUrl = "http://localhost:19138/api/";
     private dogeMonitor: { shutdown: () => void; finished: Promise<void> } | null = null;
 
     constructor(
@@ -947,7 +947,7 @@ class DepositRuntime {
         let fail = 0;
         let success = 0;
 
-        const batchSize = 10;
+        const batchSize = 100;
         for (let i = 0; i < depositTxs.length; i += batchSize) {
             const batch = depositTxs.slice(i, i + batchSize);
             if (batch.length === 0) {
@@ -1180,7 +1180,7 @@ class DepositRuntime {
                     }
 
                 } catch (error: any) {
-                    Logger.error(`[L1 Processor] Error processing block ${l1Height}: ${error.message}`);
+                    Logger.info(`[L1 Processor] Error processing block ${l1Height}: ${error.message}`);
                     await new Promise(resolve => setTimeout(resolve, 5000)); // Wait before retrying
                 }
             }

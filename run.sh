@@ -3,13 +3,13 @@
 yarn install
 yarn build
 rm -rf out/pandoras-box.log
-transactions=500
-batch=50
-subaccounts=500
+transactions=50000
+batch=400
+subaccounts=1000
 concurrency=100
 
-RPC="https://rpc.testnet.dogeos.com" #dogeos
-RPC="http://rpc.qiaoxiaorui.org" #unifra
+RPC="http://10.142.0.16:8545" #dogeos
+RPC="http://localhost:8545" #unifra
 
 zmq="tcp://localhost:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
@@ -19,6 +19,8 @@ MOAT_CONTRACT=0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f
 
 export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX" #dogeos
 export BRIDGE_ADDRESS="2NCCRZP9qvJ8eSZ7AwNYycmmCrvyENXE2LD" #unifra
+export L1_CONFIRMATIONS=120
+DEPOSIT_COUNT=1000
 
 out=latest
 mkdir -p ${out}
@@ -103,29 +105,26 @@ runDeposit() {
     export ZMQ_URL="tcp://localhost:28332"
     export WIF_MASTER="ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX"
     export WIF_AGENT='co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM'
-    export TX_COUNT=100
+    export TX_COUNT=${DEPOSIT_COUNT}
     export DB_URL="deposit.db"
     export NETWORK="testnet"
     export AMOUNT_PER_TX=201000000
     export DEPOSIT_TARGET_ADDRESS="0xd98f41da0f5b229729ed7bf469ea55d98d11f467"
     export L2_RPC_URL=${RPC}
 
-    export L1_CONFIRMATIONS=120
+    
     npx ts-node src/runtime/deposit.ts
 }
 
 #getPending
+clearPending
+sleep 3
 
 runDeposit
-
-#clearPending
 #runWithDrawal
 
-#clearPending
 #runEOA
 
-#clearPending
-#runERC20
+# runERC20
 
-#clearPending
 #runERC721

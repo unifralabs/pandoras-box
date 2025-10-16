@@ -285,7 +285,8 @@ class StatCollector {
 
 
         let waitStartTime = 0;
-        for (let blockNumber = startBlock; ; blockNumber) {
+        let emptyBlockCount = 0;
+        for (let blockNumber = startBlock; emptyBlockCount < 10;) { // Increase from 5 to 20
             try {
                 // Check pending transaction count to determine if transactions are still being processed
                 const pendingTxCount = await this.getPendingTransactionCount(provider);
@@ -309,23 +310,27 @@ class StatCollector {
                     }
                     await new Promise(resolve => setTimeout(resolve, 1000));
                     continue;
-                    continue;
                 } else {
                     waitStartTime = 0;
                     scanBar.update({ scannedBlocks: blockNumber });
                     blockNumber++;
+                    let newTxFound = false;
                     if (block.transactions) {
                         for (const tx of block.transactions) {
                             const txHash = tx.hash;
                             if (targetTxSet.has(txHash)) {
                                 succeededTransactions.push(new txStats(txHash, block.number));
                                 scanBar.update(succeededTransactions.length, {});
+                                newTxFound = true;
                             }
                         }
                         if (targetTxSet.size === succeededTransactions.length) {
                             scanBar.stop();
                             break;
                         }
+                    }
+                    if (!newTxFound && succeededTransactions.length > 0) {
+                        emptyBlockCount++;
                     }
                 }
             } catch (error: any) {
@@ -535,31 +540,28 @@ class StatCollector {
         const sortedBlocks = Array.from(uniqueBlocks).sort((a, b) => a - b);
 
         // Handle edge cases: we need at least 3 blocks with transactions to calculate a TPS range.
-        if (sortedBlocks.length < 3) {
+        if (sortedBlocks.length < 4) { // Need at least 4 blocks to have a start, end, and a block in between.
             Logger.error(
-                'Insufficient data to calculate Overall TPS (need at least 3 blocks with transactions)'
+                'Insufficient data to calculate Overall TPS (need at least 4 blocks with transactions to define a stable range)'
             );
-            Logger.error(`Found only ${sortedBlocks.length} block(s) with transactions.`);
+            Logger.error(`Found only ${sortedBlocks.length} block(s) with transactions. Cannot exclude start and end blocks.`);
             return 0;
         }
 
-        const firstBlock = sortedBlocks[0];
+        // The calculation range is from the second block to the second-to-last block.
+        // This aligns with the data displayed in the final report table.
         const secondBlock = sortedBlocks[1];
+        const secondToLastBlock = sortedBlocks[sortedBlocks.length - 2];
 
-        // Count transactions excluding the first and second blocks
+        // Count transactions within the defined range (inclusive).
         for (const stat of stats) {
-            if (stat.block === firstBlock || stat.block === secondBlock) {
-                continue;
-            }
-            if (stat.block !== 0) {
+            if (stat.block >= secondBlock && stat.block <= secondToLastBlock) {
                 totalTxs++;
             }
         }
 
-        // Calculate total time span from second block to last block
-        const lastBlock = sortedBlocks[sortedBlocks.length - 1];
-
-        const lastBlockInfo = blockInfoMap.get(lastBlock);
+        // Calculate total time span from the second block to the second-to-last block.
+        const lastBlockInfo = blockInfoMap.get(secondToLastBlock);
         const secondBlockInfo = blockInfoMap.get(secondBlock);
 
         if (!secondBlockInfo || !lastBlockInfo) {
@@ -572,15 +574,13 @@ class StatCollector {
         totalTime = Math.abs(lastBlockInfo.createdAt - secondBlockInfo.createdAt);
 
         if (totalTxs === 0) {
-            Logger.error(
-                'No transactions found in blocks after the second one. Cannot calculate Overall TPS.'
-            );
+            Logger.warn('No transactions found in the calculated range. Overall TPS is 0.');
             return 0;
         }
 
         if (totalTime === 0) {
             Logger.warn(
-                'Second and last blocks have the same timestamp. Using a minimum of 1s for TPS calculation to avoid division by zero.'
+                'The time difference between the start and end blocks of the calculation range is zero. Using a minimum of 1s for TPS calculation to avoid division by zero.'
             );
             totalTime = 1;
         }
@@ -627,36 +627,71 @@ class StatCollector {
         });
         const avgUtilization = totalUtilization / blockInfoMap.size;
 
-        // Calculate TPS statistics
-        const tpsValues: number[] = [];
+        // Calculate per-block transaction count statistics
+        const txCountValues: number[] = [];
         blockInfoMap.forEach((info) => {
-            if (info.tps > 0) { // Only include non-zero TPS values
-                tpsValues.push(info.tps);
-            }
+            // All blocks with info have transactions, so we can just push numTxs
+            txCountValues.push(info.numTxs);
         });
 
-        let maxTps = 0;
-        let minTps = 0;
-        let avgTps = 0;
+        let maxTxsPerBlock = 0;
+        let minTxsPerBlock = 0;
+        let avgTxsPerBlock = 0;
 
-        if (tpsValues.length > 0) {
-            maxTps = Math.max(...tpsValues);
-            minTps = Math.min(...tpsValues);
-            avgTps = tpsValues.reduce((sum, val) => sum + val, 0) / tpsValues.length;
+        if (txCountValues.length > 0) {
+            maxTxsPerBlock = Math.max(...txCountValues);
+            minTxsPerBlock = Math.min(...txCountValues);
+            avgTxsPerBlock =
+                txCountValues.reduce((sum, val) => sum + val, 0) /
+                txCountValues.length;
         }
 
+        // New calculations based on your request
+        const sortedBlockNumbers = Array.from(blockInfoMap.keys()).sort((a, b) => a - b);
+        let includedBlockCount = 0;
+        let includedTxCount = 0;
+        let startTime = 0;
+        let endTime = 0;
+        let startBlockNum = 0;
+        let endBlockNum = 0;
+
+        if (sortedBlockNumbers.length > 2) {
+            startBlockNum = sortedBlockNumbers[1];
+            endBlockNum = sortedBlockNumbers[sortedBlockNumbers.length - 2];
+            startTime = blockInfoMap.get(startBlockNum)?.createdAt ?? 0;
+            endTime = blockInfoMap.get(endBlockNum)?.createdAt ?? 0;
+
+            for (let i = 1; i < sortedBlockNumbers.length - 1; i++) {
+                const blockNum = sortedBlockNumbers[i];
+                const block = blockInfoMap.get(blockNum);
+                if (block) {
+                    includedBlockCount++;
+                    includedTxCount += block.numTxs;
+                }
+            }
+        }
+
+        const totalTime = (endTime > startTime) ? (endTime - startTime) : 0;
+        const avgBlockTime = (includedBlockCount > 1 && totalTime > 0) ? (totalTime / (includedBlockCount -1)).toFixed(2) : 'N/A';
+
         const finalDataTable = new Table({
-            head: ['Overall TPS', 'Blocks', 'Avg. Utilization', 'Max TPS', 'Min TPS', 'Avg TPS'],
+            head: ['Metric', 'Value'],
         });
 
-        finalDataTable.push([
-            tps,
-            blockInfoMap.size,
-            `${avgUtilization.toFixed(2)}%`,
-            maxTps,
-            minTps > 0 ? minTps : 'N/A',
-            avgTps > 0 ? avgTps.toFixed(1) : 'N/A',
-        ]);
+        finalDataTable.push(
+            { 'Overall TPS': tps },
+            { 'Total Txs (included)': includedTxCount },
+            { 'Total Blocks (included)': includedBlockCount },
+            { 'Start Block': startBlockNum > 0 ? startBlockNum : 'N/A' },
+            { 'End Block': endBlockNum > 0 ? endBlockNum : 'N/A' },
+            { 'Start Time': startTime > 0 ? new Date(startTime * 1000).toISOString() : 'N/A' },
+            { 'End Time': endTime > 0 ? new Date(endTime * 1000).toISOString() : 'N/A' },
+            { 'Avg. Block Time (s)': avgBlockTime },
+            { 'Avg. Utilization': `${avgUtilization.toFixed(2)}%` },
+            { 'Max Txs/Block': maxTxsPerBlock },
+            { 'Min Txs/Block': minTxsPerBlock > 0 ? minTxsPerBlock : 'N/A' },
+            { 'Avg Txs/Block': avgTxsPerBlock > 0 ? avgTxsPerBlock.toFixed(1) : 'N/A' }
+        );
 
         Logger.title(finalDataTable.toString());
     }
