@@ -60,7 +60,7 @@ function isP2PKH(script: Buffer): boolean {
  *
  * Then run this script with ts-node or after transpiling to JavaScript.
  */
-export function createTxDatabase(dbPath:string): DB {
+export function createTxDatabase(dbPath: string): DB {
     const db = new BetterSqlite3(dbPath);
     db.exec(
         `CREATE TABLE IF NOT EXISTS l1_headers (
@@ -224,7 +224,7 @@ export async function startL1Listener(
             const blockJson = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblock', [blockHash, 2]);
             processBlock(blockJson);
 
-            const completedCount = (completedCountStmt.get() as {count: number}).count;
+            const completedCount = (completedCountStmt.get() as { count: number }).count;
             progressBar.update(completedCount, { blockHeight: blockJson.height });
 
             Logger.info(
@@ -300,11 +300,11 @@ export async function startL1ListenerRpc(
     rpcUrl: string,
     rpcUser: string,
     rpcPass: string,
-    targetAddrHash: string = "",
+    targetAddrOrHash: string = "",
     bars?: cliProgress.MultiBar,
     startHeight?: number
 ) {
-    Logger.debug(`[l1-listener-rpc] startL1ListenerRpc rpcUrl: ${rpcUrl}, targetAddrHash: ${targetAddrHash}`);
+    Logger.debug(`[l1-listener-rpc] startL1ListenerRpc rpcUrl: ${rpcUrl}, targetAddrHash: ${targetAddrOrHash}`);
 
     const insertStmt = db.prepare(
         `INSERT OR IGNORE INTO l1_headers (height, hash, version, prev_hash, merkle_root, timestamp, create_at, bits, nonce, size_bytes)
@@ -393,7 +393,9 @@ export async function startL1ListenerRpc(
                 const scriptPubKey = vout.scriptPubKey;
                 if (!scriptPubKey || !scriptPubKey.hex) continue;
 
-                if (scriptPubKey.hex.toLowerCase().substring(6,46) === targetAddrHash) {
+                if (scriptPubKey.hex.toLowerCase().substring(6, 46) === targetAddrOrHash ||
+                    vout.scriptPubKey.addresses?.includes(targetAddrOrHash)
+                ) {
                     rowsToUpdate.push({
                         uid: Number(valueInSatoshis), // Assuming uid is the value in satoshis
                         l1_txhash: txHash,
@@ -411,7 +413,7 @@ export async function startL1ListenerRpc(
         if (rowsToUpdate.length > 0) {
             Logger.info(`[l1-rpc] updated ${rowsToUpdate.length} transactions, progress: ${completedCount}/${totalCount.count}`);
         }
-        
+
         Logger.info(
             `[l1-rpc] Block processed: ${blockHash} height=${height} (txs=${transactions.length}) (size: ${blockJson.size} bytes)`
         );
@@ -424,7 +426,7 @@ export async function startL1ListenerRpc(
     } else {
         const latestHeaderStmt = db.prepare(`SELECT MAX(height) as height FROM l1_headers`);
         const latestHeader = latestHeaderStmt.get() as { height: number | null };
-        
+
         currentHeight = (latestHeader.height ?? 0);
         if (currentHeight > 0) {
             currentHeight++;
@@ -434,17 +436,17 @@ export async function startL1ListenerRpc(
             Logger.info(`[l1-listener-rpc] Starting scan from block 1 (no previous data or start height specified)`);
         }
     }
-    
+
 
     while (true) {
         try {
             const latestBlockCount = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblockcount', []);
-            
+
             while (currentHeight <= latestBlockCount) {
                 const blockHash = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblockhash', [currentHeight]);
                 // Use verbosity 2 to get a detailed JSON object with parsed transactions
                 const blockJson = await dogeRpc(rpcUrl, rpcUser, rpcPass, 'getblock', [blockHash, 2]);
-                
+
                 processBlock(blockJson);
 
                 remainingL1 = (remainingL1Stmt.get() as { cnt: number }).cnt;
@@ -453,14 +455,14 @@ export async function startL1ListenerRpc(
                     Logger.info('[l1-listener-rpc] All transactions have obtained L1 info. Stopping listener.');
                     return;
                 }
-                
+
                 currentHeight++;
             }
 
         } catch (e) {
             Logger.error(`[l1-listener-rpc] Error during block processing loop: ${e instanceof Error ? e.stack || e.message : String(e)}`);
         }
-        
+
         // Wait for a bit before polling for new blocks
         await new Promise(resolve => setTimeout(resolve, 10000)); // 10 seconds
     }
@@ -495,6 +497,7 @@ export async function startL2Listener(
 
     // 3) Pump loop triggered by new heads; guarantees sequential processing
     let latestTarget = await provider.getBlockNumber();
+    latestTarget=50018;
     let pumping = false;
     let lastProcessed = latestTarget;
     let lastHash = await provider.getBlock(latestTarget).then((block: any) => block.hash);
@@ -532,7 +535,10 @@ export async function startL2Listener(
             while (lastProcessed < latestTarget) {
                 const nextHeight = lastProcessed + 1;
                 const block = await provider.getBlock(nextHeight, true);
-                if (!block) break; // wait for node to have the block
+                if (!block) {
+                    Logger.error(`l2 get block ${nextHeight} failed`);
+                    break;
+                } // wait for node to have the block
 
                 // Reorg detection: parent of next must equal hash of lastProcessed
                 if (lastProcessed > 0 && lastHash && block.parentHash !== lastHash) {
@@ -636,7 +642,7 @@ export async function startL2Listener(
                     progressBar.stop();
                     Logger.info(`[l2-listener] All transactions have L2 information. Stopping L2 listener.`);
                     provider.removeAllListeners();
-                    return;
+                    break;
                 }
             }
         } catch (e) {
@@ -659,7 +665,7 @@ export async function startL2Listener(
 
 // Unified entry
 export function startCrossChainListeners(opts: {
-    l1TargetHash: string;          // 20-byte hex without 0x
+    l1TargetHashOrAddr: string;          // 20-byte hex without 0x
     l1ListenMode: 'zmq' | 'rpc';
     zmqEndpoint?: string;
     l1RpcUrl?: string;
@@ -671,7 +677,7 @@ export function startCrossChainListeners(opts: {
     dbPath?: string;
     transactions: TransactionRequest[]
 }): Promise<void> {
-    const { l1TargetHash, l1ListenMode, zmqEndpoint, l1RpcUrl, l1RpcUser, l1RpcPass, l1StartHeight, l2Rpc, moatAddress } = opts;
+    const { l1TargetHashOrAddr: l1TargetHash, l1ListenMode, zmqEndpoint, l1RpcUrl, l1RpcUser, l1RpcPass, l1StartHeight, l2Rpc, moatAddress } = opts;
     const db = createTxDatabase(opts.dbPath ?? "withdrawal.db");
     // db.prepare(`DELETE FROM txs`).run();
 
@@ -696,11 +702,18 @@ export function startCrossChainListeners(opts: {
         if (!l1RpcUrl || !l1RpcUser || !l1RpcPass) {
             throw new Error('L1 RPC URL, user, and password are required for rpc mode.');
         }
-        l1Promise = startL1ListenerRpc(db, l1RpcUrl, l1RpcUser, l1RpcPass, l1TargetHash, bars, l1StartHeight).catch(e => {
+        const l1PromiseTask = async () => {
+            if (!opts.l1StartHeight || opts.l1StartHeight === 0) {
+                opts.l1StartHeight = await dogeRpc(l1RpcUrl, l1RpcUser, l1RpcPass, 'getblockcount', []);
+                Logger.info(`[cross-chain] l1StartHeight not provided, using current L1 block height: ${opts.l1StartHeight}`);
+            }
+            return startL1ListenerRpc(db, l1RpcUrl, l1RpcUser, l1RpcPass, l1TargetHash, bars, opts.l1StartHeight);
+        };
+        l1Promise = l1PromiseTask().catch(e => {
             Logger.error(`L1 (RPC) listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
             throw e;
         });
-    } else { // default to zmq
+    } else {
         if (!zmqEndpoint || !l1RpcUrl || !l1RpcUser || !l1RpcPass) {
             throw new Error('ZMQ endpoint and L1 RPC credentials are required for zmq mode.');
         }
@@ -709,13 +722,13 @@ export function startCrossChainListeners(opts: {
             throw e;
         });
     }
-    const l2Promise = startL2Listener(db, l2Rpc, moatAddress, bars).catch((e) => {
+    const l2PromiseTask = startL2Listener(db, l2Rpc, moatAddress, bars).catch((e) => {
         Logger.error(`L2 listener error ${e instanceof Error ? e.stack || e.message : String(e)}`);
         throw e;
     });
 
-    return Promise.all([l1Promise, l2Promise]).then(() => {
-        try { bars.stop(); } catch (_) {}
+    return Promise.all([l1Promise, l2PromiseTask]).then(() => {
+        try { bars.stop(); } catch (_) { }
         Logger.info('[cross-chain] Both listeners finished. Executing statistic().');
         statistic(db);
     });
@@ -737,7 +750,7 @@ export function statistic(_db: DB): void {
     function printDelayTable(delays: number[]) {
         const table = new Table({ head: ["Metric", "Seconds"] });
         delays.sort((a, b) => a - b);
-        const avg = delays.reduce((a,b)=>a+b,0)/delays.length;
+        const avg = delays.reduce((a, b) => a + b, 0) / delays.length;
         table.push(
             ["Max", delays[delays.length - 1] ?? "N/A"],
             ["Min", delays[0] ?? "N/A"],
@@ -756,8 +769,8 @@ export function statistic(_db: DB): void {
     }
 
     function calcLayerStats(db: DB, layer: Layer) {
-    const prefix = layer === 'l1' ? 'l1' : 'l2';
-    const blockCol = `${prefix}_height`;
+        const prefix = layer === 'l1' ? 'l1' : 'l2';
+        const blockCol = `${prefix}_height`;
 
         const blockRows = db.prepare(`SELECT ${blockCol} as height, COUNT(*) as cnt FROM txs WHERE ${blockCol} IS NOT NULL GROUP BY ${blockCol}`).all() as { height: number, cnt: number }[];
         if (blockRows.length === 0) {
@@ -771,22 +784,22 @@ export function statistic(_db: DB): void {
 
         const minHeight = blockRowsWithCnt[0].height;
         const maxHeight = blockRowsWithCnt[blockRowsWithCnt.length - 1].height;
-    const headerTable = layer === 'l1' ? 'l1_headers' : 'l2_headers';
-    const timeCol = layer === 'l1' ? 'create_at' : 'timestamp';
+        const headerTable = layer === 'l1' ? 'l1_headers' : 'l2_headers';
+        const timeCol = 'timestamp';
 
-    // Fetch header timestamps for [minHeight-1, maxHeight]
-    const headerRows = db.prepare(`SELECT height, ${timeCol} as ts FROM ${headerTable} WHERE height BETWEEN ${minHeight - 1} AND ${maxHeight} ORDER BY height`).all() as { height: number, ts: number }[];
+        // Fetch header timestamps for [minHeight-1, maxHeight]
+        const headerRows = db.prepare(`SELECT height, ${timeCol} as ts FROM ${headerTable} WHERE height BETWEEN ${minHeight - 1} AND ${maxHeight} ORDER BY height`).all() as { height: number, ts: number }[];
         const headerTs: Record<number, number> = {};
-    for (const h of headerRows) headerTs[h.height] = h.ts;
+        for (const h of headerRows) headerTs[h.height] = h.ts;
 
-    // If L1 and the create_at looks like ms (>= 1e11), normalize to seconds
-    const looksMs = layer === 'l1' && Object.values(headerTs).some(v => typeof v === 'number' && v >= 1e11);
-    const toSec = (v: number) => looksMs ? (v / 1000) : v;
+        // If L1 and the create_at looks like ms (>= 1e11), normalize to seconds
+        const looksMs = layer === 'l1' && Object.values(headerTs).some(v => typeof v === 'number' && v >= 1e11);
+        const toSec = (v: number) => looksMs ? (v / 1000) : v;
 
-    const blockTable = new Table({ head: ["Block height", "Tx count", "Δt(s)", "Block TPS"] });
+        const blockTable = new Table({ head: ["Block height", "Tx count", "Δt(s)", "Block TPS"] });
         const instantaneousTps: number[] = [];
-    const missingPrev: number[] = [];
-    const missingCurr: number[] = [];
+        const missingPrev: number[] = [];
+        const missingCurr: number[] = [];
         for (const row of blockRowsWithCnt) {
             const currTsRaw = headerTs[row.height];
             const prevTsRaw = headerTs[row.height - 1];
@@ -812,16 +825,16 @@ export function statistic(_db: DB): void {
 
         Logger.title(`\n${layer.toUpperCase()} per-block stats:` + "\n" + blockTable.toString());
 
-    // Diagnostics for missing headers
-    const uniq = (arr: number[]) => Array.from(new Set(arr)).sort((a,b)=>a-b);
-    const missPrevUniq = uniq(missingPrev);
-    const missCurrUniq = uniq(missingCurr);
-    if (missPrevUniq.length || missCurrUniq.length) {
-        const sample = (xs: number[]) => xs.slice(0, 10).join(', ') + (xs.length > 10 ? ` ... (+${xs.length-10})` : '');
-        if (missPrevUniq.length) Logger.warn(`[statistic] Missing previous headers (${layer.toUpperCase()}): ${sample(missPrevUniq)}`);
-        if (missCurrUniq.length) Logger.warn(`[statistic] Missing current headers (${layer.toUpperCase()}): ${sample(missCurrUniq)}`);
-        Logger.warn(`[statistic] Missing headers cause '-' in Δt/TPS. Fill ${layer.toUpperCase()} headers for consecutive heights to compute instantaneous TPS.`);
-    }
+        // Diagnostics for missing headers
+        const uniq = (arr: number[]) => Array.from(new Set(arr)).sort((a, b) => a - b);
+        const missPrevUniq = uniq(missingPrev);
+        const missCurrUniq = uniq(missingCurr);
+        if (missPrevUniq.length || missCurrUniq.length) {
+            const sample = (xs: number[]) => xs.slice(0, 10).join(', ') + (xs.length > 10 ? ` ... (+${xs.length - 10})` : '');
+            if (missPrevUniq.length) Logger.warn(`[statistic] Missing previous headers (${layer.toUpperCase()}): ${sample(missPrevUniq)}`);
+            if (missCurrUniq.length) Logger.warn(`[statistic] Missing current headers (${layer.toUpperCase()}): ${sample(missCurrUniq)}`);
+            Logger.warn(`[statistic] Missing headers cause '-' in Δt/TPS. Fill ${layer.toUpperCase()} headers for consecutive heights to compute instantaneous TPS.`);
+        }
 
         const maxTps = instantaneousTps.length ? Math.max(...instantaneousTps) : 0;
 
@@ -856,13 +869,13 @@ export function statistic(_db: DB): void {
     }
 
     const db = _db;
-    
+
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM txs`).get() as { cnt: number };
     const l2Success = db.prepare(`SELECT COUNT(*) as cnt FROM txs WHERE l2_txhash IS NOT NULL`).get() as { cnt: number };
     const l1Success = db.prepare(`SELECT COUNT(*) as cnt FROM txs WHERE l1_txhash IS NOT NULL`).get() as { cnt: number };
     printBasicStats(total.cnt, l2Success.cnt, l1Success.cnt);
 
-    
+
     const delayRows = db.prepare(`SELECT l2_timestamp, l1_timestamp FROM txs WHERE l1_timestamp IS NOT NULL AND l2_timestamp IS NOT NULL`).all() as { l2_timestamp: number, l1_timestamp: number }[];
     const delays = delayRows.map(r => r.l1_timestamp - r.l2_timestamp).filter(d => d >= 0);
     if (delays.length === 0) {
@@ -870,19 +883,20 @@ export function statistic(_db: DB): void {
     } else {
         printDelayTable(delays);
     }
-    
+
     calcLayerStats(db, 'l2');
     calcLayerStats(db, 'l1');
 }
 
 // Standalone execution
 if (require.main === module) {
+    const bs58check = require('bs58check');
     const program = new Command();
     program
-        .option('--l1-target-hash <hash>', '20-byte hex L1 target address hash', "bc7656b9d24943793cbdd73fe392aca6ba7a9c3a")
+        .option('--l1-target-addr <hash>', 'dogecoin address', "ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb")
         .option('--l1-listen-mode <mode>', 'L1 listener mode: zmq or rpc', 'rpc')
-        .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint (for zmq mode)', "tcp://10.8.0.25:30495")
-        .option('--l1-rpc-url <url>', 'Dogecoin RPC URL (for rpc mode)', 'http://127.0.0.1:22555')
+        .option('--zmq-endpoint <endpoint>', 'Dogecoin ZMQ endpoint (for zmq mode)', "tcp://localhost:28332")
+        .option('--l1-rpc-url <url>', 'Dogecoin RPC URL (for rpc mode)', 'http://127.0.0.1:44555')
         .option('--l1-rpc-user <user>', 'Dogecoin RPC username (for rpc mode)', 'dogecoin')
         .option('--l1-rpc-pass <pass>', 'Dogecoin RPC password (for rpc mode)', 'dogecoin')
         .option('--l1-start-height <height>', 'Specify L1 block height to start scanning from (for rpc mode)', (val) => parseInt(val, 10))
@@ -894,8 +908,12 @@ if (require.main === module) {
     const options = program.opts();
 
     (async () => {
+        // Decode base58 address to 20-byte hex (skip version byte)
+        // const decoded = bs58check.decode(options.l1TargetAddr);
+        // const targetHash = Buffer.from(decoded.subarray(1)).toString('hex');
+        // Logger.info(`Decoded target address ${options.l1TargetAddr} to ${targetHash}`);
         await startCrossChainListeners({
-            l1TargetHash: options.l1TargetHash,
+            l1TargetHashOrAddr: options.l1TargetAddr,
             l1ListenMode: options.l1ListenMode,
             zmqEndpoint: options.zmqEndpoint,
             l1RpcUrl: options.l1RpcUrl,

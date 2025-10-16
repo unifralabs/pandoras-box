@@ -190,8 +190,9 @@ class WithdrawalRuntime {
                 const hash20 = Buffer.from(decoded.subarray(1)).toString('hex');
                 startCrossChainListeners({
                     l1ListenMode: 'rpc',
-                    l1TargetHash: hash20,
+                    l1TargetHashOrAddr: hash20,
                     zmqEndpoint: this.zmqEndpoint,
+                    l1StartHeight: 0,
                     l2Rpc: this.url,
                     moatAddress: this.moatContractAddress,
                     l1RpcUrl: this.l1RpcUrl,
