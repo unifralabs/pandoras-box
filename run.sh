@@ -18,16 +18,29 @@ TARGET_ENV=${1:-"dogeos"} # Default to "dogeos", or take from the first script a
 echo "[INFO] Using target environment: $TARGET_ENV"
 
 
+# ###################################
+# #dogeos config
+# L1_RPC_URL="http://localhost:44555"
+# L1_RPC_USER="fBJhRsMr"
+# L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
+# RPC="http://localhost:8545"
+# export L1_CONFIRMATIONS=120
+# export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
+# MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
+# WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
+# ###################################
+
+
 ###################################
-#dogeos config
+#unifra config
 L1_RPC_URL="http://localhost:44555"
 L1_RPC_USER="fBJhRsMr"
 L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
 RPC="http://localhost:8545"
-export L1_CONFIRMATIONS=120
-export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
-MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
-WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
+export BRIDGE_ADDRESS="2NCCRZP9qvJ8eSZ7AwNYycmmCrvyENXE2LD"
+export L1_CONFIRMATIONS=6
+MOAT_CONTRACT="0x8e09FbF68DAC16334e0D91322d6316d8FDc4f78E"
+WITHDRAWAL_TARGET="njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF"
 ###################################
 
 
