@@ -17,33 +17,19 @@ MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary bette
 TARGET_ENV=${1:-"dogeos"} # Default to "dogeos", or take from the first script argument.
 echo "[INFO] Using target environment: $TARGET_ENV"
 
-if [ "$TARGET_ENV" == "dogeos" ]; then
-    ###################################
-    #dogeos config
-    L1_RPC_URL="http://localhost:44555"
-    L1_RPC_USER="fBJhRsMr"
-    L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
-    #RPC="http://10.142.0.16:8545"
-    RPC="https://rpc.testnet.dogeos.com"
-    #RPC="https://dogeos-testnet-public.unifra.io"
-    export L1_CONFIRMATIONS=120
-    export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
-    MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
-    WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
-    ###################################
-elif [ "$TARGET_ENV" == "unifra" ]; then
-    ###################################
-    #unifra config
-    L1_RPC_URL="http://localhost:44555"
-    L1_RPC_USER="fBJhRsMr"
-    L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
-    RPC="http://localhost:8545"
-    export BRIDGE_ADDRESS="2NCCRZP9qvJ8eSZ7AwNYycmmCrvyENXE2LD"
-    export L1_CONFIRMATIONS=6
-    MOAT_CONTRACT="0x8e09FbF68DAC16334e0D91322d6316d8FDc4f78E"
-    WITHDRAWAL_TARGET="njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF"
-    ###################################
-fi
+
+###################################
+#dogeos config
+L1_RPC_URL="http://localhost:44555"
+L1_RPC_USER="fBJhRsMr"
+L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
+RPC="http://localhost:8545"
+export L1_CONFIRMATIONS=120
+export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
+MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
+WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
+###################################
+
 
 echo "[INFO] RPC Endpoint: $RPC"
 
@@ -143,13 +129,10 @@ runDeposit() {
 }
 
 
-# clearPending
+clearPending
 
 #runDeposit
 #runWithDrawal
-
 runEOA
-
 #runERC20
-
 #runERC721
