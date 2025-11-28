@@ -21,9 +21,12 @@ class WithdrawalRuntime {
 
     gasEstimation: BigNumber = BigNumber.from(0);
     gasPrice: BigNumber = BigNumber.from(0);
+    maxFeePerGas: BigNumber = BigNumber.from(0);
+    maxPriorityFeePerGas: BigNumber = BigNumber.from(0);
 
     defaultValue: BigNumber = parseUnits('1', 'ether')
     fixedGasPrice: BigNumber | null;
+    gasPriceMultiplier: number;
     moatContractAddress: string;
     targetAddress: string;
     zmqEndpoint: string;
@@ -40,7 +43,8 @@ class WithdrawalRuntime {
         l1RpcUrl: string,
         l1RpcUser?: string,
         l1RpcPass?: string,
-        fixedGasPrice: BigNumber | null = null
+        fixedGasPrice: BigNumber | null = null,
+        gasPriceMultiplier: number = 2
     ) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
@@ -52,6 +56,7 @@ class WithdrawalRuntime {
         this.l1RpcUrl = l1RpcUrl;
         this.l1RpcUser = l1RpcUser;
         this.l1RpcPass = l1RpcPass;
+        this.gasPriceMultiplier = gasPriceMultiplier;
     }
 
     private static listenerStarted = false;
@@ -73,7 +78,7 @@ class WithdrawalRuntime {
         return this.defaultValue.add(parseUnits('0.4', 'ether'));
     }
 
-    CallContractValue(): BigNumber{
+    CallContractValue(): BigNumber {
         return this.defaultValue.add(parseUnits('0.1', 'ether'));
     }
 
@@ -82,8 +87,21 @@ class WithdrawalRuntime {
             this.gasPrice = this.fixedGasPrice;
             return this.gasPrice;
         }
+
+        const feeData = await this.provider.getFeeData();
+        if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+            // Apply multiplier to ensure transactions get mined
+            const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+            this.maxFeePerGas = feeData.maxFeePerGas.mul(multiplierInt).div(10);
+            this.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.mul(multiplierInt).div(10);
+            // Fallback for legacy compatibility
+            this.gasPrice = feeData.gasPrice ?? BigNumber.from(0);
+            return this.maxFeePerGas;
+        }
+
         const currentGasPrice = await this.provider.getGasPrice();
-        this.gasPrice = currentGasPrice.mul(4);
+        const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+        this.gasPrice = currentGasPrice.mul(multiplierInt).div(10);
         return this.gasPrice;
     }
 
@@ -114,10 +132,18 @@ class WithdrawalRuntime {
         ).connect(this.provider);
 
         const chainID = await queryWallet.getChainId();
+        await this.GetGasPrice();
         const gasPrice = this.gasPrice;
 
         Logger.info(`Chain ID: ${chainID}`);
-        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
+        if (this.maxFeePerGas.gt(0)) {
+            Logger.info(`Using EIP-1559 Transactions`);
+            Logger.info(`Max Fee Per Gas: ${this.maxFeePerGas.toString()} (${this.maxFeePerGas.div(1e9).toString()} Gwei)`);
+            Logger.info(`Max Priority Fee Per Gas: ${this.maxPriorityFeePerGas.toString()} (${this.maxPriorityFeePerGas.div(1e9).toString()} Gwei)`);
+        } else {
+            Logger.info(`Using Legacy Transactions`);
+            Logger.info(`Avg. gas price: ${gasPrice.toString()} (${gasPrice.div(1e9).toString()} Gwei)`);
+        }
 
         const moatInterface = new Interface(MoatABI);
 
@@ -140,7 +166,7 @@ class WithdrawalRuntime {
         //     value: this.GetValue(),
         //     data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
         // });
-        this.gasEstimation = BigNumber.from(153_785*2);
+        this.gasEstimation = BigNumber.from(153_785 * 2);
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -167,16 +193,26 @@ class WithdrawalRuntime {
             }
 
             const uidPart = BigNumber.from(senderIndex * 1e4 + sender.getNonce()).mul(BigNumber.from('10000000000'));
-            transactions[senderIndex].push({
+
+            const tx: TransactionRequest = {
                 from: sender.getAddress(),
                 chainId: chainID,
                 to: this.moatContractAddress,
-                gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
                 value: this.CallContractValue().add(uidPart),
                 data: moatInterface.encodeFunctionData('withdrawToL1', [targetHex]),
                 nonce: sender.getNonce(),
-            });
+            };
+
+            if (this.maxFeePerGas.gt(0)) {
+                tx.type = 2;
+                tx.maxFeePerGas = this.maxFeePerGas;
+                tx.maxPriorityFeePerGas = this.maxPriorityFeePerGas;
+            } else {
+                tx.gasPrice = gasPrice;
+            }
+
+            transactions[senderIndex].push(tx);
 
             sender.incrNonce();
             constructBar.increment();

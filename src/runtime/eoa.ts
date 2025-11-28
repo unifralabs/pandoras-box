@@ -4,7 +4,6 @@ import {
     Provider,
     TransactionRequest,
 } from '@ethersproject/providers';
-import { parseUnits } from '@ethersproject/units';
 import { Wallet } from '@ethersproject/wallet';
 import { SingleBar } from 'cli-progress';
 import Logger from '../logger/logger';
@@ -17,15 +16,20 @@ class EOARuntime {
 
     gasEstimation: BigNumber = BigNumber.from(0);
     gasPrice: BigNumber = BigNumber.from(0);
+    maxFeePerGas: BigNumber = BigNumber.from(0);
+    maxPriorityFeePerGas: BigNumber = BigNumber.from(1);
+    useEIP1559: boolean = true;
 
     defaultValue: BigNumber = BigNumber.from(1);
     fixedGasPrice: BigNumber | null;
+    gasPriceMultiplier: number;
 
-    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null) {
+    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null, gasPriceMultiplier: number = 2) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
         this.fixedGasPrice = fixedGasPrice;
+        this.gasPriceMultiplier = gasPriceMultiplier;
     }
 
     async EstimateBaseTx(): Promise<BigNumber> {
@@ -46,11 +50,29 @@ class EOARuntime {
 
     async GetGasPrice(): Promise<BigNumber> {
         if (this.fixedGasPrice) {
+            this.useEIP1559 = false;
             this.gasPrice = this.fixedGasPrice;
             return this.gasPrice;
         }
+
+        const feeData = await this.provider.getFeeData();
+
+        if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+            this.useEIP1559 = true;
+            // Apply multiplier to ensure transactions get mined
+            const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+            this.maxFeePerGas = feeData.maxFeePerGas.mul(multiplierInt).div(10);
+            this.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.mul(multiplierInt).div(10);
+
+            // Fallback for legacy compatibility
+            this.gasPrice = feeData.gasPrice ?? BigNumber.from(0);
+            return this.maxFeePerGas;
+        }
+
+        this.useEIP1559 = false;
         const currentGasPrice = await this.provider.getGasPrice();
-        this.gasPrice = currentGasPrice.mul(4);
+        const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+        this.gasPrice = currentGasPrice.mul(multiplierInt).div(10);
         return this.gasPrice;
     }
 
@@ -81,10 +103,38 @@ class EOARuntime {
         ).connect(this.provider);
 
         const chainID = await queryWallet.getChainId();
-        const gasPrice = this.gasPrice;
-
         Logger.info(`Chain ID: ${chainID}`);
-        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
+
+        // Ensure we have the latest gas price/fee data
+        await this.GetGasPrice();
+        const use1559 = this.useEIP1559 && this.maxFeePerGas.gt(0);
+        const latestBlock = await this.provider.getBlock('latest');
+
+        if (latestBlock.baseFeePerGas) {
+            Logger.info(`Base Fee: ${latestBlock.baseFeePerGas.toString()} (${latestBlock.baseFeePerGas.div(1e9).toString()} Gwei)`);
+        }
+
+        if (use1559) {
+            Logger.info(`Using EIP-1559 Transactions`);
+            Logger.info(`Max Fee Per Gas: ${this.maxFeePerGas.toString()} (${this.maxFeePerGas.div(1e9).toString()} Gwei)`);
+            Logger.info(`Max Priority Fee Per Gas: ${this.maxPriorityFeePerGas.toString()} (${this.maxPriorityFeePerGas.div(1e9).toString()} Gwei)`);
+
+            if (latestBlock.baseFeePerGas) {
+                const baseFee = latestBlock.baseFeePerGas;
+                const potentialPrice = baseFee.add(this.maxPriorityFeePerGas);
+
+                if (potentialPrice.gt(this.maxFeePerGas)) {
+                    Logger.info(`Limiting Factor: Max Fee Per Gas (${this.maxFeePerGas.div(1e9).toString()} Gwei) < Base Fee + Priority Fee (${potentialPrice.div(1e9).toString()} Gwei)`);
+                    Logger.info(`Estimated Effective Gas Price: ${this.maxFeePerGas.toString()} (${this.maxFeePerGas.div(1e9).toString()} Gwei)`);
+                } else {
+                    Logger.info(`Limiting Factor: Base Fee + Priority Fee (${potentialPrice.div(1e9).toString()} Gwei) <= Max Fee Per Gas (${this.maxFeePerGas.div(1e9).toString()} Gwei)`);
+                    Logger.info(`Estimated Effective Gas Price: ${potentialPrice.toString()} (${potentialPrice.div(1e9).toString()} Gwei)`);
+                }
+            }
+        } else {
+            Logger.info(`Using Legacy Transactions`);
+            Logger.info(`Avg. gas price: ${this.gasPrice.toString()} (${this.gasPrice.div(1e9).toString()} Gwei)`);
+        }
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -112,15 +162,24 @@ class EOARuntime {
                 throw new Error(`Invalid accounts at transaction index ${i}`);
             }
 
-            transactions[senderIndex].push({
+            const tx: TransactionRequest = {
                 from: sender.getAddress(),
                 chainId: chainID,
                 to: receiver.getAddress(),
-                gasPrice: gasPrice,
                 gasLimit: this.gasEstimation,
                 value: this.defaultValue,
                 nonce: sender.getNonce(),
-            });
+            };
+
+            if (use1559) {
+                tx.type = 2;
+                tx.maxFeePerGas = this.maxFeePerGas;
+                tx.maxPriorityFeePerGas = this.maxPriorityFeePerGas;
+            } else {
+                tx.gasPrice = this.gasPrice;
+            }
+
+            transactions[senderIndex].push(tx);
 
             sender.incrNonce();
             constructBar.increment();

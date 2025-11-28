@@ -1,5 +1,6 @@
 
 import { JsonRpcProvider } from '@ethersproject/providers';
+import type { BigNumber } from '@ethersproject/bignumber';
 import { Wallet } from '@ethersproject/wallet';
 import { SingleBar } from 'cli-progress';
 import Logger from '../logger/logger';
@@ -31,7 +32,7 @@ class ClearPendingRuntime {
     public async run() {
         const totalAccountsToScan = this.endIndex - this.startIndex;
         Logger.info(`Scanning and clearing pending transactions for accounts from index ${this.startIndex} to ${this.endIndex} with a concurrency of ${this.concurrency}...`);
-        
+
         let totalClearedCount = 0;
         const processBar = new SingleBar({
             format: 'Processing Accounts [{bar}] {percentage}% | ETA: {eta}s | {value}/{total} | Sent Clearing Txs: {cleared}',
@@ -41,14 +42,104 @@ class ClearPendingRuntime {
         });
         processBar.start(totalAccountsToScan, 0, { cleared: 0 });
 
-        for (let i = this.startIndex; i < this.endIndex; i += this.concurrency) {
-            // Move feeData fetching to the batch level to ensure consistency within the batch and reduce RPC calls.
+        const PRIORITY_MULTIPLIER_PERCENT = 200;
+        const BASE_FEE_BUFFER_PERCENT = 150;
+        const LEGACY_GAS_MULTIPLIER_PERCENT = 200;
+        const RETRY_BUMP_STEP_PERCENT = 25;
+        const MAX_RETRIES_PER_NONCE = 3;
+
+        type FeeConfig =
+            | {
+                eip1559: true;
+                maxFeePerGas: BigNumber;
+                maxPriorityFeePerGas: BigNumber;
+            }
+            | {
+                eip1559: false;
+                gasPrice: BigNumber;
+            };
+
+        const fetchBufferedFees = async (bumpPercent: number = 100): Promise<FeeConfig> => {
             const feeData = await this.provider.getFeeData();
 
-            const batchEnd = Math.min(i + this.concurrency, this.endIndex);
-            // 2. 让 Promise 返回清理的数量，而不是直接修改外部变量
+            if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+                const recommendedPriority = feeData.maxPriorityFeePerGas
+                    .mul(PRIORITY_MULTIPLIER_PERCENT)
+                    .div(100);
+                const bumpedPriority = recommendedPriority.mul(bumpPercent).div(100);
+
+                const inferredBaseFee = feeData.maxFeePerGas.sub(feeData.maxPriorityFeePerGas);
+                const bufferedBase = inferredBaseFee.gt(0)
+                    ? inferredBaseFee.mul(BASE_FEE_BUFFER_PERCENT).div(100)
+                    : feeData.maxFeePerGas;
+
+                const bumpedBase = bufferedBase.mul(bumpPercent).div(100);
+                let maxFeePerGas = bumpedBase.add(bumpedPriority);
+
+                if (bumpedPriority.gt(maxFeePerGas)) {
+                    maxFeePerGas = bumpedPriority;
+                }
+
+                return {
+                    eip1559: true,
+                    maxFeePerGas,
+                    maxPriorityFeePerGas: bumpedPriority,
+                };
+            }
+
+            const baseGasPrice = feeData.gasPrice || (await this.provider.getGasPrice());
+            const gasPrice = baseGasPrice
+                .mul(LEGACY_GAS_MULTIPLIER_PERCENT)
+                .div(100)
+                .mul(bumpPercent)
+                .div(100);
+
+            return {
+                eip1559: false,
+                gasPrice,
+            };
+        };
+
+        const buildTxWithFees = (baseTx: any, fees: FeeConfig) => {
+            if (fees.eip1559) {
+                return {
+                    ...baseTx,
+                    type: 2,
+                    maxFeePerGas: fees.maxFeePerGas,
+                    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+                };
+            }
+
+            return {
+                ...baseTx,
+                gasPrice: fees.gasPrice,
+            };
+        };
+
+        const isNonceUsedError = (error: any): boolean => {
+            const message = (error?.message || error?.error?.message || '').toLowerCase();
+            return (
+                message.includes('nonce too low') ||
+                message.includes('nonce has already been used') ||
+                error?.code === 'NONCE_EXPIRED'
+            );
+        };
+
+        const isUnderpricedError = (error: any): boolean => {
+            const message = (error?.message || error?.error?.message || '').toLowerCase();
+            return (
+                message.includes('underpriced') ||
+                message.includes('fee cap less than block base fee')
+            );
+        };
+
+        const computeBumpPercent = (attempt: number): number =>
+            100 + attempt * RETRY_BUMP_STEP_PERCENT;
+
+        for (let i = this.startIndex; i <= this.endIndex; i += this.concurrency) {
+            const batchEnd = Math.min(i + this.concurrency, this.endIndex + 1);
             const batchPromises: Promise<number>[] = [];
-            
+
             for (let j = i; j < batchEnd; j++) { // This inner loop is correct
                 const processPromise = (async (accountIndex): Promise<number> => {
                     const wallet = Wallet.fromMnemonic(
@@ -65,58 +156,61 @@ class ClearPendingRuntime {
                             const numToClear = pendingNonce - latestNonce;
                             Logger.debug(`\n[Account ${accountIndex}] Pending txs detected. Nonce -> Pending: ${pendingNonce}, On-chain: ${latestNonce}. Attempting to clear ${numToClear} tx(s).`);
 
+                            let abortAccount = false;
                             for (let nonceToClear = latestNonce; nonceToClear < pendingNonce; nonceToClear++) {
-                                try {
-                                    let tx: any;
+                                let attempt = 0;
+                                let clearedNonce = false;
 
-                                    // 适配 EIP-1559 和 legacy 交易
-                                    if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
-                                        // Use a more aggressive gas strategy to ensure replacement
-                                        // 1. Double the priority fee to strongly incentivize miners.
-                                        const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.mul(200).div(100);
+                                while (attempt < MAX_RETRIES_PER_NONCE && !clearedNonce && !abortAccount) {
+                                    const bumpPercent = computeBumpPercent(attempt);
+                                    const feeConfig = await fetchBufferedFees(bumpPercent);
+                                    const txBase = {
+                                        to: wallet.address,
+                                        value: 0,
+                                        nonce: nonceToClear,
+                                        gasLimit: 21000,
+                                    };
+                                    const tx = buildTxWithFees(txBase, feeConfig);
 
-                                        // 2. Calculate base fee from the node's suggestion.
-                                        const baseFee = feeData.maxFeePerGas.sub(feeData.maxPriorityFeePerGas);
-                                        
-                                        // 3. Set maxFeePerGas to be comfortably above the current base fee + our new priority fee.
-                                        const maxFeePerGas = baseFee.add(maxPriorityFeePerGas).mul(150).div(100); // Add 50% buffer
-                                        Logger.debug(`  -> Clearing with EIP-1559: maxFeePerGas=${maxFeePerGas.toString()}, maxPriorityFeePerGas=${maxPriorityFeePerGas.toString()}`);
-
-                                        // 2. 健壮性检查：确保 priority fee 不会超过 max fee
-                                        if (maxPriorityFeePerGas.gt(maxFeePerGas)) {
-                                            Logger.warn(`\n  -> Adjusted maxPriorityFeePerGas (${maxPriorityFeePerGas.toString()}) was higher than maxFeePerGas (${maxFeePerGas.toString()}). Using maxFeePerGas as priority fee.`);
-                                            tx = { 
-                                                to: wallet.address, value: 0, nonce: nonceToClear, gasLimit: 21000, 
-                                                maxFeePerGas: maxFeePerGas, 
-                                                maxPriorityFeePerGas: maxFeePerGas // Fallback to prevent error
-                                            };
-                                        } else {
-                                        tx = { 
-                                            to: wallet.address, value: 0, nonce: nonceToClear, gasLimit: 21000, 
-                                            maxFeePerGas: maxFeePerGas, 
-                                            maxPriorityFeePerGas: maxPriorityFeePerGas
-                                        };
+                                    try {
+                                        const txResponse = await wallet.sendTransaction(tx);
+                                        Logger.debug(`  -> Sent clearing transaction for nonce ${nonceToClear}. Hash: ${txResponse.hash}`);
+                                        successfullyClearedInAccount++;
+                                        clearedNonce = true;
+                                    } catch (error: any) {
+                                        if (isNonceUsedError(error)) {
+                                            Logger.debug(`  -> Nonce ${nonceToClear} already mined for account ${accountIndex}, skipping.`);
+                                            clearedNonce = true;
+                                            break;
                                         }
-                                    } else {
-                                        // For legacy networks, double the current gas price.
-                                        const gasPrice = (feeData.gasPrice || await this.provider.getGasPrice()).mul(200).div(100);
-                                        Logger.debug(`  -> Clearing with Legacy Gas: gasPrice=${gasPrice.toString()}`);
-                                        tx = { to: wallet.address, value: 0, nonce: nonceToClear, gasPrice: gasPrice, gasLimit: 21000 };
-                                    }
 
-                                    const txResponse = await wallet.sendTransaction(tx);
-                                    Logger.debug(`  -> Sent clearing transaction for nonce ${nonceToClear}. Hash: ${txResponse.hash}`);
-                                    successfullyClearedInAccount++;
-                                } catch (error: any) {
-                                    // 3. 更清晰的错误日志
-                                    Logger.warn(`\n  -> Failed to send clearing tx for nonce ${nonceToClear} on account ${accountIndex}: ${error.message}`);
-                                    Logger.warn(`  -> Aborting further clearing for this account.`);
-                                    break; 
+                                        if (isUnderpricedError(error)) {
+                                            attempt++;
+                                            if (attempt >= MAX_RETRIES_PER_NONCE) {
+                                                Logger.warn(`\n  -> Clearing tx for nonce ${nonceToClear} underpriced after ${attempt} attempts. Aborting account ${accountIndex}.`);
+                                                abortAccount = true;
+                                            } else {
+                                                Logger.warn(`\n  -> Clearing tx underpriced for nonce ${nonceToClear} on account ${accountIndex}. Retrying with higher fees (attempt ${attempt + 1}/${MAX_RETRIES_PER_NONCE}).`);
+                                            }
+                                            continue;
+                                        }
+
+                                        Logger.warn(`\n  -> Failed to send clearing tx for nonce ${nonceToClear} on account ${accountIndex}: ${error.message}`);
+                                        abortAccount = true;
+                                    }
+                                }
+
+                                if (!clearedNonce || abortAccount) {
+                                    break;
                                 }
                             }
-                            
+
                             if (successfullyClearedInAccount > 0) {
                                 Logger.debug(`\nSuccessfully sent ${successfullyClearedInAccount} of ${numToClear} clearing tx(s) for account ${accountIndex}.`);
+                            }
+
+                            if (abortAccount) {
+                                Logger.warn(`  -> Aborting further clearing for account ${accountIndex}.`);
                             }
                         }
                     } catch (error: any) {

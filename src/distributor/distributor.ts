@@ -155,16 +155,17 @@ class Distributor {
             'GetGasPrice'
         );
 
-        const baseTxCost = baseGasPrice.mul(baseTxEstimate).add(inherentValue);
-
         // Calculate how much each sub-account needs
         // to execute their part of the run cycle.
         // Each account needs at least numTx * (gasPrice * gasLimit + value)
         const numTxPerAccount = this.requestedSubAccounts > 0
             ? Math.ceil(this.totalTx / this.requestedSubAccounts)
             : this.totalTx;
-        const subAccountCost = BigNumber.from(numTxPerAccount).mul(baseTxCost);
-
+        
+        //every account need 0.01 eth
+        const perAccountBudget = parseEther('0.01');
+        const subAccountCost = BigNumber.from(numTxPerAccount).mul(perAccountBudget);
+        
         // Calculate the cost of the single distribution transaction
         const singleDistributionCost = await withTimeout(
             this.provider.estimateGas({
@@ -241,7 +242,6 @@ class Distributor {
                 if (result.balance === null || result.error) {
                     this.failedBalanceCount++;
                     Logger.warn(`Failed to get balance for account ${result.index}: ${result.error || 'Unknown error'} (SKIPPED)`);
-                    // 关键修改：超时或失败的账号不进入 ready / 不进入待补，如需后续再次尝试可在外层重新跑 distribute
                     continue;
                 }
 

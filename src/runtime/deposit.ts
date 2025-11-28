@@ -71,7 +71,7 @@ class DepositRuntime {
     private l1MasterAddress: string = '';
     private l1AgentAddress: string = '';
     private depositTargetAddress: string = '';
-    private blockBookUrl = "http://localhost:19138/api/";
+    private blockBookUrl = "https://blockbook.qiaoxiaorui.org/api/";
     private dogeMonitor: { shutdown: () => void; finished: Promise<void> } | null = null;
 
     constructor(

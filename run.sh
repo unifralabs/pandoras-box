@@ -3,12 +3,12 @@
 yarn install
 yarn build
 rm -rf out/pandoras-box.log
-transactions=20000
-batch=1600
+transactions=10000
+batch=200
 subaccounts=1000
-concurrency=50
+concurrency=100
 
-DEPOSIT_COUNT=2000
+DEPOSIT_COUNT=200
 
 zmq="tcp://localhost:28332"
 MNEMONIC="clog mask tuition survey build canvas guide gentle okay ordinary better bonus"
@@ -18,16 +18,29 @@ TARGET_ENV=${1:-"dogeos"} # Default to "dogeos", or take from the first script a
 echo "[INFO] Using target environment: $TARGET_ENV"
 
 
+# ###################################
+# #dogeos config
+# L1_RPC_URL="http://localhost:44555"
+# L1_RPC_USER="fBJhRsMr"
+# L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
+# RPC="https://rpc.devnet.doge.xyz"
+# export L1_CONFIRMATIONS=120
+# export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
+# MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
+# WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
+# ###################################
+
+
 ###################################
-#dogeos config
-L1_RPC_URL="http://localhost:44555"
+#unifra config
+L1_RPC_URL="https://dogecoin.qiaoxiaorui.org"
 L1_RPC_USER="fBJhRsMr"
 L1_RPC_PASSWORD="btmiSyJ4YRiWNgwr"
-RPC="http://localhost:8545"
-export L1_CONFIRMATIONS=120
-export BRIDGE_ADDRESS="2N93sHBDVig5aG6hms2Ep5z6d5NQVgghEzX"
-MOAT_CONTRACT="0xb46985D56F57d138Bfaa7ACbAE0dE38dc3CFc00f"
-WITHDRAWAL_TARGET="ngFbQoFBoeTrxM5MBoMsopunoFsBKHtQdb"
+RPC="https://rpc.qiaoxiaorui.org"
+export BRIDGE_ADDRESS="2MwCNMnogvBTbcGPyxedtgpULVSuicUWUT1"
+export L1_CONFIRMATIONS=6
+MOAT_CONTRACT="0x0482EEdb28Cb155C9F8c70a86A0513dbAD0e347d"
+WITHDRAWAL_TARGET="njheRpkMP86j3hgtHVEjcsqYMiV2jbK3mF"
 ###################################
 
 
@@ -55,7 +68,6 @@ clearPending(){
 runEOA()
 {
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
-    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -64,12 +76,13 @@ runEOA()
     -o ./${out}/EOA_${transactions}_${batch}_${subaccounts}.json
     getPending
     exit 0
+#        --fixed-gas-price \
 }
 
 runERC20()
 {
+    # --fixed-gas-price \
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
-    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -83,7 +96,6 @@ runERC20()
 runERC721()
 {
     ./bin/index.js -u $RPC -m "$MNEMONIC" \
-    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -99,7 +111,6 @@ runWithDrawal(){
     rm -rf withdrawal.db
     export LOG_LEVEL=DEBUG
     ./bin/index.js -u "$RPC" -m "$MNEMONIC" \
-    --fixed-gas-price \
     -t $transactions \
     -b $batch \
     -s $subaccounts \
@@ -115,7 +126,7 @@ runWithDrawal(){
 }
 
 runDeposit() {
-    export L1_RPC_URL="http://${L1_RPC_USER}:${L1_RPC_PASSWORD}}@localhost:44555"
+    export L1_RPC_URL="https://${L1_RPC_USER}:${L1_RPC_PASSWORD}@dogecoin.qiaoxiaorui.org"
     export ZMQ_URL="tcp://localhost:28332"
     export WIF_MASTER="ciCWUwnkp21uK3Mm12UcGT27HNXCMFa6U1kFogJjsp9W51BVRgnX"
     export WIF_AGENT='co89zv3jhdCm2sr2s3151EjUBLtd7oH82FRcUdgTmWzBLuq9HtjM'
@@ -129,10 +140,11 @@ runDeposit() {
 }
 
 
-clearPending
+curl -s -X POST --data '{"jsonrpc":"2.0","method":"txpool_content","params":[],"id":1}' -H "Content-Type: application/json" https://rpc.qiaoxiaorui.org | jq '{pending: (.result.pending | length), queued: (.result.queued | length)}'
+# clearPending
 
 #runDeposit
 #runWithDrawal
-runEOA
-#runERC20
-#runERC721
+#runEOA
+runERC20
+runERC721

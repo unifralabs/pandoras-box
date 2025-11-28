@@ -19,6 +19,8 @@ class ERC20Runtime {
 
     gasEstimation: BigNumber = BigNumber.from(0);
     gasPrice: BigNumber = BigNumber.from(0);
+    maxFeePerGas: BigNumber = BigNumber.from(0);
+    maxPriorityFeePerGas: BigNumber = BigNumber.from(0);
 
     defaultValue: BigNumber = BigNumber.from(0);
     defaultTransferValue = 1;
@@ -29,14 +31,16 @@ class ERC20Runtime {
 
     contract: Contract | undefined;
     fixedGasPrice: BigNumber | null;
+    gasPriceMultiplier: number;
 
     baseDeployer: Wallet;
 
-    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null) {
+    constructor(mnemonic: string, url: string, fixedGasPrice: BigNumber | null = null, gasPriceMultiplier: number = 2) {
         this.mnemonic = mnemonic;
         this.provider = new JsonRpcProvider(url);
         this.url = url;
         this.fixedGasPrice = fixedGasPrice;
+        this.gasPriceMultiplier = gasPriceMultiplier;
 
         this.baseDeployer = Wallet.fromMnemonic(
             this.mnemonic,
@@ -127,8 +131,22 @@ class ERC20Runtime {
             this.gasPrice = this.fixedGasPrice;
             return this.gasPrice;
         }
-        const currentGasPrice = await this.provider.getGasPrice();
-        this.gasPrice = currentGasPrice.mul(4);
+
+        const feeData = await this.provider.getFeeData();
+        if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+            // Apply multiplier to ensure transactions get mined
+            const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+            this.maxFeePerGas = feeData.maxFeePerGas.mul(multiplierInt).div(10);
+            this.maxPriorityFeePerGas = feeData.maxPriorityFeePerGas.mul(multiplierInt).div(10);
+            // Fallback for legacy compatibility if needed, though we prefer EIP1559
+            this.gasPrice = feeData.gasPrice ?? BigNumber.from(0);
+        } else {
+            // Fallback to legacy gas price if EIP1559 data is missing
+            const currentGasPrice = await this.provider.getGasPrice();
+            const multiplierInt = Math.floor(this.gasPriceMultiplier * 10);
+            this.gasPrice = currentGasPrice.mul(multiplierInt).div(10);
+        }
+
         return this.gasPrice;
     }
 
@@ -139,7 +157,7 @@ class ERC20Runtime {
         if (!this.contract) {
             throw RuntimeErrors.errRuntimeNotInitialized;
         }
-        
+
         // Validate accounts array
         if (!accounts || accounts.length === 0) {
             throw new Error('No accounts available for transaction construction. Please check fund distribution.');
@@ -158,10 +176,34 @@ class ERC20Runtime {
         Logger.info(`Using ${validAccounts.length} funded accounts for ${numTx} transactions`);
 
         const chainID = await this.baseDeployer.getChainId();
+        // Ensure we have the latest gas price/fee data
+        await this.GetGasPrice();
         const gasPrice = this.gasPrice;
+        const latestBlock = await this.provider.getBlock('latest');
 
         Logger.info(`Chain ID: ${chainID}`);
-        Logger.info(`Avg. gas price: ${gasPrice.toHexString()}`);
+        if (latestBlock.baseFeePerGas) {
+            Logger.info(`Base Fee: ${latestBlock.baseFeePerGas.toString()} (${latestBlock.baseFeePerGas.div(1e9).toString()} Gwei)`);
+        }
+
+        if (this.maxFeePerGas.gt(0)) {
+            Logger.info(`Using EIP-1559 Transactions`);
+            Logger.info(`Max Fee Per Gas: ${this.maxFeePerGas.toString()} (${this.maxFeePerGas.div(1e9).toString()} Gwei)`);
+            Logger.info(`Max Priority Fee Per Gas: ${this.maxPriorityFeePerGas.toString()} (${this.maxPriorityFeePerGas.div(1e9).toString()} Gwei)`);
+
+            if (latestBlock.baseFeePerGas) {
+                const baseFee = latestBlock.baseFeePerGas;
+                // effectiveGasPrice = min(maxFee, baseFee + maxPriority)
+                let effectiveGasPrice = baseFee.add(this.maxPriorityFeePerGas);
+                if (effectiveGasPrice.gt(this.maxFeePerGas)) {
+                    effectiveGasPrice = this.maxFeePerGas;
+                }
+                Logger.info(`Estimated Effective Gas Price: ${effectiveGasPrice.toString()} (${effectiveGasPrice.div(1e9).toString()} Gwei)`);
+            }
+        } else {
+            Logger.info(`Using Legacy Transactions`);
+            Logger.info(`Avg. gas price: ${gasPrice.toString()} (${gasPrice.div(1e9).toString()} Gwei)`);
+        }
 
         const constructBar = new SingleBar({
             barCompleteChar: '\u2588',
@@ -198,7 +240,15 @@ class ERC20Runtime {
             // Override the defaults
             transaction.from = sender.getAddress();
             transaction.chainId = chainID;
-            transaction.gasPrice = gasPrice;
+
+            if (this.maxFeePerGas.gt(0)) {
+                transaction.type = 2;
+                transaction.maxFeePerGas = this.maxFeePerGas;
+                transaction.maxPriorityFeePerGas = this.maxPriorityFeePerGas;
+            } else {
+                transaction.gasPrice = gasPrice;
+            }
+
             transaction.gasLimit = this.gasEstimation;
             transaction.nonce = sender.getNonce();
 

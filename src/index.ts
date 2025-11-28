@@ -136,6 +136,11 @@ async function run() {
         ).option(
             '--blockbook-url <url>', 'Blockbook URL for DEPOSIT mode'
         )
+        .option(
+            '--gas-price-multiplier <multiplier>',
+            'Multiplier for gas price (default: 2.0)',
+            '2.0'
+        )
         .parse();
 
     const options = program.opts();
@@ -166,6 +171,7 @@ async function run() {
     const amountPerTxInSatoshi = BigInt(options.amount);
     const depositTarget = options.depositTarget;
     const blockbookUrl = options.blockbookUrl;
+    const gasPriceMultiplier = parseFloat(options.gasPriceMultiplier);
 
     if (useFixedGasPrice) {
         fixedGasPrice = parseUnits('1', 'gwei');
@@ -225,16 +231,16 @@ async function run() {
 
     switch (mode) {
         case RuntimeType.EOA:
-            runtime = new EOARuntime(mnemonic, url, fixedGasPrice);
+            runtime = new EOARuntime(mnemonic, url, fixedGasPrice, gasPriceMultiplier);
             break;
         case RuntimeType.ERC20:
-            runtime = new ERC20Runtime(mnemonic, url, fixedGasPrice);
+            runtime = new ERC20Runtime(mnemonic, url, fixedGasPrice, gasPriceMultiplier);
             Logger.info('\nDeploying ERC20 contract, this may take a moment...');
             await (runtime as InitializedRuntime).Initialize();
             Logger.success('ERC20 contract deployed successfully.');
             break;
         case RuntimeType.ERC721:
-            runtime = new ERC721Runtime(mnemonic, url, fixedGasPrice);
+            runtime = new ERC721Runtime(mnemonic, url, fixedGasPrice, gasPriceMultiplier);
             Logger.info('\nDeploying ERC721 contract, this may take a moment...');
             await (runtime as InitializedRuntime).Initialize();
             Logger.success('ERC721 contract deployed successfully.');
@@ -254,7 +260,8 @@ async function run() {
                 l1RpcUrl,
                 l1RpcUser,
                 l1RpcPass,
-                fixedGasPrice
+                fixedGasPrice,
+                gasPriceMultiplier
             );
             break;
         default:

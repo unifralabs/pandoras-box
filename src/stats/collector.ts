@@ -287,7 +287,8 @@ class StatCollector {
 
         let waitStartTime = 0;
         let emptyBlockCount = 0;
-        for (let blockNumber = startBlock; emptyBlockCount < 10;) { // Increase from 5 to 20
+        let blockNumber = startBlock;
+        for (; emptyBlockCount < 10;) { // Increase from 5 to 20
             try {
                 // Check pending transaction count to determine if transactions are still being processed
                 const pendingTxCount = await this.getPendingTransactionCount(provider);
@@ -370,7 +371,7 @@ class StatCollector {
 
         const foundCount = succeededTransactions.length;
         const totalCount = txHashes.length;
-        Logger.success(`Found ${foundCount}/${totalCount} transactions in blocks ${startBlock}`);
+        Logger.success(`Found ${foundCount}/${totalCount} transactions in blocks ${startBlock} - ${blockNumber}`);
 
         if (foundCount < totalCount) {
             Logger.warn(`${totalCount - foundCount} transactions were not found in the scanned block range`);
